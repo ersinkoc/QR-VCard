@@ -6,8 +6,8 @@ export default function HomePage() {
   const navigate = useNavigate();
 
   return (
-    <main className="flex min-h-dvh flex-col items-center justify-center bg-bg px-4">
-      <div className="w-full max-w-sm">
+    <main className="flex min-h-dvh flex-col items-center justify-center bg-bg px-4 page-pad">
+      <div className="w-full max-w-sm rise">
         <div className="text-center">
           <img src="/favicon.svg" alt="" width="48" height="48" className="mx-auto" />
           <h1 className="mt-4 text-2xl font-semibold tracking-tight">QR-VCard</h1>

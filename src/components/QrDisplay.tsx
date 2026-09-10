@@ -75,7 +75,7 @@ export default function QrDisplay({ data, size = 240, className }: { data: strin
   if (error) {
     return (
       <div className={className}>
-        <p className="text-sm text-red-600">QR generation failed.</p>
+        <p className="text-sm text-danger">QR generation failed.</p>
         <p className="mt-1 break-words text-sm text-muted">{error}</p>
       </div>
     );

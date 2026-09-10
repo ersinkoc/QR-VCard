@@ -9,6 +9,8 @@
   --color-accent: oklch(58% 0.16 264);
   --color-accent-contrast: oklch(99% 0 0);
   --color-line: oklch(92% 0.004 260);
+  /* Error text keeps AA contrast on both schemes, so the token adapts. */
+  --color-danger: oklch(55% 0.2 27);
 
   --radius-lg: 0.5rem;
   --radius-xl: 0.665rem;
@@ -28,15 +30,39 @@
     --color-accent: oklch(68% 0.15 264);
     --color-accent-contrast: oklch(18% 0.01 260);
     --color-line: oklch(30% 0.012 260);
+    --color-danger: oklch(72% 0.16 22);
   }
 }
 
 @layer base {
   html {
     color-scheme: light dark;
+    /* Phones: no grey tap flash, no landscape font inflation. */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
   }
   body {
     @apply bg-bg font-sans text-fg leading-normal antialiased;
+    /* Landscape phones: keep content clear of the notch. Only left/right live
+       here — top/bottom belong to .page-pad on the page itself, so no phantom
+       scroll appears around the min-h-dvh page mains. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+  /* Motion is flair, not information: honour the OS reduce-motion setting by
+     removing entrance and transition motion entirely instead of slowing it. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+    html {
+      scroll-behavior: auto !important;
+    }
   }
 }
 
@@ -44,8 +70,9 @@
   .card {
     @apply rounded-xl border border-line bg-surface shadow-card;
   }
+  /* 44px tall (h-11): the comfortable touch target on phones. */
   .btn {
-    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium tracking-tight transition-all duration-150 select-none;
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium tracking-tight transition-all duration-150 select-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none;
   }
   .btn:active {
     translate: 0 1px;
@@ -67,5 +94,29 @@
   }
   .code {
     @apply font-mono text-sm;
+  }
+  /* Page frame: desktop keeps the usual 40px rhythm; notched phones get their
+     safe-area insets whenever those are larger. */
+  .page-pad {
+    padding-top: max(2.5rem, env(safe-area-inset-top));
+    padding-bottom: max(2.5rem, env(safe-area-inset-bottom));
+  }
+  /* Entrance motion for page-level containers. `both` + the delay variant
+     holds the later element invisible until its turn. */
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .rise {
+    animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .rise-2 {
+    animation-delay: 0.08s;
   }
 }

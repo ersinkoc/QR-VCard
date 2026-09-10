@@ -41,7 +41,7 @@ export default function ScanPage() {
 
   if (card === 'loading') {
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-bg px-4">
+      <main className="flex min-h-dvh items-center justify-center bg-bg px-4 page-pad">
         <p className="text-muted">Loading…</p>
       </main>
     );
@@ -49,7 +49,7 @@ export default function ScanPage() {
 
   if (!card) {
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-bg px-4">
+      <main className="flex min-h-dvh items-center justify-center bg-bg px-4 page-pad">
         <div className="card max-w-sm p-8 text-center">
           <p className="font-semibold tracking-tight">Card not available</p>
           <p className="mt-2 text-sm text-muted">This link is either wrong or the card is not published.</p>
@@ -63,12 +63,18 @@ export default function ScanPage() {
 
   const name = [card.first_name, card.last_name].filter(Boolean).join(' ').trim() || 'Contact';
   const url = shortUrl(card.code);
+  const accent = card.accent_color ?? 'var(--color-accent)';
 
   return (
-    <main className="min-h-dvh bg-bg px-4 py-10">
+    <main className="min-h-dvh bg-bg px-4 page-pad">
       <div className="mx-auto w-full max-w-md">
-        <div className="card overflow-hidden">
-          <div className="h-1.5 w-full" style={{ backgroundColor: card.accent_color ?? 'var(--color-accent)' }} />
+        <div className="card overflow-hidden rise">
+          {/* Accent stripe: a soft fade from the card's own colour instead of a
+              flat bar — the one flourish the visitor page carries. */}
+          <div
+            className="h-1.5 w-full"
+            style={{ background: `linear-gradient(90deg, ${accent}, color-mix(in oklab, ${accent} 55%, white))` }}
+          />
           <div className="p-6">
             <div className="flex items-center gap-4">
               <Initials text={name} />
@@ -89,7 +95,7 @@ export default function ScanPage() {
 
             <div className="mt-6 border-t border-line pt-4">
               {showQr ? (
-                <div className="flex flex-col items-center gap-3">
+                <div className="flex flex-col items-center gap-3 rise">
                   <QrDisplay data={url} size={200} />
                   <p className="code text-muted">{url}</p>
                   <CopyButton text={url} />

@@ -55,7 +55,7 @@ function LoginForm({ onLoggedIn }: { onLoggedIn: () => void }) {
           Password
         </label>
         <input id="password" className="input" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-sm text-danger">{error}</p>}
         <button type="submit" className="btn btn-primary mt-4 w-full" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
@@ -82,7 +82,7 @@ function QrModal({ card, onClose }: { card: VCard; onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="card bg-surface p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="card rise bg-surface p-6" onClick={(e) => e.stopPropagation()}>
         <h3 className="mb-4 text-center text-lg font-semibold tracking-tight">QR · {card.code}</h3>
         <QrDisplay data={url} size={280} />
         <p className="code mt-4 text-center text-muted">{url}</p>
@@ -95,7 +95,7 @@ function QrModal({ card, onClose }: { card: VCard; onClose: () => void }) {
             Close
           </button>
         </div>
-        {downloadError && <p className="mt-3 text-center text-sm text-red-600">{downloadError}</p>}
+        {downloadError && <p className="mt-3 text-center text-sm text-danger">{downloadError}</p>}
       </div>
     </div>
   );
@@ -173,7 +173,7 @@ function UsersPanel() {
   }
 
   return (
-    <section className="card mt-8 p-5">
+    <section className="card rise mt-8 p-5">
       <h2 className="text-lg font-semibold tracking-tight">Users</h2>
       <p className="mt-1 text-sm text-muted">
         Create an account per person. Each one signs in with their own password and manages only their own cards.
@@ -272,7 +272,7 @@ function UsersPanel() {
       </form>
 
       {notice && <p className="mt-3 text-sm text-muted">{notice}</p>}
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
     </section>
   );
 }
@@ -352,9 +352,9 @@ export default function PanelPage() {
   }
 
   return (
-    <main className="min-h-dvh bg-bg px-4 py-10">
+    <main className="min-h-dvh bg-bg px-4 page-pad">
       <div className="mx-auto w-full max-w-3xl">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="rise flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Your cards</h1>
             <p className="text-sm text-muted">
@@ -396,7 +396,7 @@ export default function PanelPage() {
           </div>
         )}
 
-        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
         <div className="mt-6">
           {cards === null ? (
@@ -406,7 +406,7 @@ export default function PanelPage() {
               No cards yet — create your first one.
             </div>
           ) : (
-            <ul className="card divide-y divide-[var(--color-line)]">
+            <ul className="card rise rise-2 divide-y divide-[var(--color-line)]">
               {cards.map((card) => {
                 const name = [card.first_name, card.last_name].filter(Boolean).join(' ').trim() || card.code;
                 const url = shortUrl(card.code);
@@ -436,7 +436,7 @@ export default function PanelPage() {
                     </button>
                     <button
                       type="button"
-                      className="btn btn-ghost text-red-600"
+                      className="btn btn-ghost text-danger"
                       onClick={() => {
                         if (!window.confirm(`Delete card “${name}”?`)) return;
                         void mutate(() => deleteCard(me, card));

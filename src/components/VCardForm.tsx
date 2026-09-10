@@ -59,7 +59,7 @@ export default function VCardForm({ me, initial, ownerOptions, onCancel, onSaved
   }
 
   return (
-    <form onSubmit={onSubmit} className="card p-5">
+    <form onSubmit={onSubmit} className="card rise p-5">
       <h2 className="text-lg font-semibold tracking-tight">{initial ? 'Edit card' : 'New card'}</h2>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -125,7 +125,7 @@ export default function VCardForm({ me, initial, ownerOptions, onCancel, onSaved
         </p>
       )}
 
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
 
       <div className="mt-4 flex gap-2">
         <button type="submit" className="btn btn-primary" disabled={busy}>
