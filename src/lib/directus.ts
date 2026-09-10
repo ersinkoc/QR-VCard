@@ -103,11 +103,21 @@ export async function listCards(me: MeInfo): Promise<VCard[]> {
 }
 
 /**
- * Creates a card. `ownerId` lets an admin create one on another user's behalf;
- * omitted, Directus stamps the creating user as the owner.
+ * Creates a card. `ownerId` lets a privileged actor create one on another user's
+ * behalf; a plain user may not assign an owner at all. The UI only renders the
+ * picker for admins, but the adapter is the documented enforcement layer on an
+ * unlicensed Directus, so the refusal lives here rather than in the form.
  */
-export async function createCard(input: Partial<VCard> & { code: string }, ownerId?: string | null): Promise<VCard> {
-  const body = assignOwner({ ...input } as Record<string, unknown>, ownerId);
+export async function createCard(
+  me: MeInfo,
+  input: Partial<VCard> & { code: string },
+  ownerId?: string | null,
+): Promise<VCard> {
+  const wanted = ownerId?.trim();
+  if (wanted && !isPrivileged(me)) {
+    throw new Error('Only admins can create a card for another user.');
+  }
+  const body = assignOwner({ ...input } as Record<string, unknown>, wanted);
   return directus.request(createItem('vcards', body)) as Promise<VCard>;
 }
 

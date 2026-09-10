@@ -49,7 +49,7 @@ export default function VCardForm({ me, initial, ownerOptions, onCancel, onSaved
       const payload: Partial<VCard> = { ...values, accent_color: accent, status };
       const saved = initial
         ? await updateCard(me, initial, payload)
-        : await createCard({ ...payload, code: generateCode() }, ownerId || undefined);
+        : await createCard(me, { ...payload, code: generateCode() }, ownerId || undefined);
       onSaved(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

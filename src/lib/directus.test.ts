@@ -79,14 +79,28 @@ describe('card creation', () => {
   it('creates a card with one request', async () => {
     const spy = vi.spyOn(directus, 'request').mockResolvedValue({ id: 'c3' });
 
-    await expect(createCard({ code: 'new123' })).resolves.toEqual({ id: 'c3' });
+    await expect(createCard(user, { code: 'new123' })).resolves.toEqual({ id: 'c3' });
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('creates a card on behalf of another owner with one request', async () => {
+  it('lets a privileged actor create a card on behalf of another owner', async () => {
     const spy = vi.spyOn(directus, 'request').mockResolvedValue({ id: 'c4' });
 
-    await expect(createCard({ code: 'new456' }, 'u-ada')).resolves.toEqual({ id: 'c4' });
+    await expect(createCard(admin, { code: 'new456' }, 'u-ada')).resolves.toEqual({ id: 'c4' });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an owner assignment by a plain user, without calling the API', async () => {
+    const spy = vi.spyOn(directus, 'request').mockResolvedValue({ id: 'c5' });
+
+    await expect(createCard(user, { code: 'new789' }, 'u-someone-else')).rejects.toThrow(/only admins/i);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('ignores a blank owner from a plain user, since nothing is being assigned', async () => {
+    const spy = vi.spyOn(directus, 'request').mockResolvedValue({ id: 'c6' });
+
+    await expect(createCard(user, { code: 'new000' }, '   ')).resolves.toEqual({ id: 'c6' });
     expect(spy).toHaveBeenCalledTimes(1);
   });
 });

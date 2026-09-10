@@ -382,6 +382,7 @@ export default function PanelPage() {
         {editing && (
           <div className="mt-6">
             <VCardForm
+              key={editing === 'new' ? 'new' : editing.id}
               me={me}
               ownerOptions={isPrivileged(me) ? assignableUsers.map((u) => ({ id: u.id, email: u.email })) : undefined}
               initial={editing === 'new' ? null : editing}
