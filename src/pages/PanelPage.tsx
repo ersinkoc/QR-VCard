@@ -314,10 +314,11 @@ export default function PanelPage() {
     void loadCards();
   }, [loadCards]);
 
-  // Admins may create cards on someone else's behalf, so they need the account
-  // list. A failure here only removes the picker, never blocks the panel.
+  // Only Administrators may read accounts — Directus gates /users to admins, so
+  // editors skip this request entirely instead of collecting 403s. The
+  // create-for-others picker stays hidden for them because the list stays empty.
   useEffect(() => {
-    if (!me || !isPrivileged(me)) return;
+    if (!me || me.role_name !== 'Administrator') return;
     void listPanelUsers()
       .then(setAssignableUsers)
       .catch(() => setAssignableUsers([]));
@@ -450,7 +451,9 @@ export default function PanelPage() {
           )}
         </div>
 
-        {isPrivileged(me) && <UsersPanel />}
+        {/* User administration is Administrator-only in Directus: editors are
+            privileged for cards, but every users call 403s for them. */}
+        {me.role_name === 'Administrator' && <UsersPanel />}
       </div>
 
       {qrCard && <QrModal card={qrCard} onClose={() => setQrCard(null)} />}
