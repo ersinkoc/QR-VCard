@@ -53,6 +53,7 @@ data. It prefers a static admin token and falls back to logging in with `DIRECTU
 | `npm run dev:all` | Vite dev server **and** the QR proxy together (one command, Ctrl+C stops both) |
 | `npm run qr:proxy` | The QR proxy alone — needed for QR generation in dev |
 | `npm run build` | `tsc --noEmit` + production build (`dist/`) |
+| `npm run start` | Single-port serve of `dist/` **and** `/api/qr` (see "Single port") |
 | `npm run preview` | Serve the production build |
 | `npm test` | Vitest unit tests (`vcf.ts`, `short-code.ts`) |
 | `npm run typecheck` | TypeScript, no emit |
@@ -118,6 +119,33 @@ and the proxy are on different origins, set `VITE_QR_PROXY_URL` and list the app
 
 Copy-pasteable production recipes — nginx and Caddy snippets, a `server/Dockerfile` +
 `docker-compose.yml`, a systemd unit, and a deployment checklist — are in
+[`server/README.md`](server/README.md).
+
+## Single port (app + QR proxy)
+
+`npm run start` runs everything on **one port**: the built app and the QR proxy in the same
+process. There is no second service to run and no reverse-proxy route for `/api/qr` to get wrong.
+
+```bash
+npm run build                  # VITE_DIRECTUS_URL is read from .env at BUILD time
+QR_API_KEY=... npm run start   # serves on http://localhost:8080 (PORT overrides)
+```
+
+- `POST /api/qr` is answered in-process by the same handler `npm run qr:proxy` uses, so the
+  provider key still never reaches the browser. A same-origin call is allowed whatever hostname the
+  app is served on; `QR_ALLOWED_ORIGINS` only governs a genuine cross-origin caller.
+- Client-side routes (`/c/<code>`, `/panel`) fall back to the app shell, hashed assets under
+  `/assets/` are cached immutably, and an unknown `/api/*` path answers **JSON 404** rather than the
+  shell — a `200 text/html` there is how a broken deployment looks like a working one.
+- Directus is still called by the browser directly: set `VITE_DIRECTUS_URL` before building, and
+  allow this app's origin in Directus.
+- Docker: the root `Dockerfile` builds exactly this single-port image —
+  `docker build -t qr-vcard --build-arg VITE_DIRECTUS_URL=https://directus.example.com .`, then
+  `docker run -p 8080:8080 -e QR_API_KEY=... qr-vcard`. Changing Directus means rebuilding; the URL
+  is inlined into the bundle.
+
+Running the proxy as its own service stays supported: `npm run qr:proxy`,
+`server/docker-compose.yml`, `server/docker-compose.traefik.yml`, and the recipes in
 [`server/README.md`](server/README.md).
 
 ## QR API status (working)
@@ -238,4 +266,8 @@ Android and Outlook.
 
 Build with `npm run build` and serve `dist/` over HTTPS (a PWA needs a secure origin). The scan
 route `/c/:code` needs an SPA fallback to `index.html`. Set `VITE_DIRECTUS_URL` at build time and
-use a licensed Directus for production so the row-level rules in `bootstrap.mjs` apply.
+use a licensed Directus for production so the row-level rules in `bootstrap.mjs` apply. Directus
+must also allow the app's origin — the browser calls it directly, and the shipped
+`directus/.env.example` sets `CORS_ENABLED=true` with `CORS_ORIGIN=true` (any origin) for local
+development; for a public deployment set `CORS_ORIGIN` to the app's domain(s) instead (see the
+Directus docs, Security limits → CORS).

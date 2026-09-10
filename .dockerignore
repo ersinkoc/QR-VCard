@@ -1,0 +1,9 @@
+# Keep the build context small and secrets out of it: the image is built with
+# --build-arg VITE_DIRECTUS_URL instead of a local .env.
+node_modules
+dist
+.git
+.temp_files
+.env
+directus/.env
+*.log

@@ -167,6 +167,23 @@ describe('qrUrl against a stub proxy (real HTTP, fake provider)', () => {
     URL.revokeObjectURL(second);
   });
 
+  it('shares one in-flight request for the same link (StrictMode double-invoke)', async () => {
+    reply = { status: 200, contentType: 'image/png', body: PNG };
+
+    const [first, second] = await Promise.all([qrUrl('https://host/c/abc'), qrUrl('https://host/c/abc')]);
+
+    // Regression lock: React StrictMode double-invokes QrDisplay's effect in
+    // development, which measured TWO provider generations for one visible QR
+    // through `npm run dev` versus one through a production build — and the
+    // provider answered a bare 500 when the two overlapped.
+    expect(seen).toHaveLength(1);
+    // Both callers still own their own URL, which is what lets QrDisplay revoke
+    // its copy without breaking the other's.
+    expect(first).not.toBe(second);
+    URL.revokeObjectURL(first);
+    URL.revokeObjectURL(second);
+  });
+
   it('downloads straight from the blob URL without minting a second one', async () => {
     reply = { status: 200, contentType: 'image/png', body: PNG };
 

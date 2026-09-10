@@ -155,12 +155,9 @@ export async function requestQr(data: string): Promise<Response> {
 }
 
 /**
- * Turns a successful response into an `<img>`-usable src.
- *
- * The provider returns raw PNG bytes, so this hands back a `blob:` URL. Callers
- * that keep the URL (QrDisplay) must revoke it when they are done with it.
+ * Validates a proxy response and hands back the provider's raw PNG bytes.
  */
-export async function parseQrResponse(res: Response): Promise<string> {
+async function readQrBlob(res: Response): Promise<Blob> {
   const contentType = res.headers.get('content-type') ?? '';
   const blob = await res.blob();
 
@@ -179,17 +176,49 @@ export async function parseQrResponse(res: Response): Promise<string> {
     );
   }
 
-  return URL.createObjectURL(blob);
+  return blob;
 }
 
-/** Stable async contract: always resolves to an <img>-usable src. */
-export async function qrUrl(data: string): Promise<string> {
+/** Turns a successful response into an `<img>`-usable src. */
+export async function parseQrResponse(res: Response): Promise<string> {
+  return URL.createObjectURL(await readQrBlob(res));
+}
+
+/**
+ * In-flight deduplication, keyed by the text being encoded.
+ *
+ * React StrictMode double-invokes effects in development, so one visible QR
+ * became TWO provider generations — measured 2 per view through `npm run dev`
+ * against 1 through a production build. That doubles the quota for a single
+ * image, and the provider answered a bare 500 when two generations of the same
+ * link overlapped. Only a request that has not settled yet is shared: each
+ * caller still mints its own blob: URL, and the entry is dropped as soon as it
+ * resolves or rejects, so no image is cached, reused or leaked.
+ */
+const inFlight = new Map<string, Promise<Blob>>();
+
+async function fetchQrBlob(data: string): Promise<Blob> {
   const res = await requestQr(data);
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error(`QR API request failed: HTTP ${res.status}${detail ? ` — ${detail.slice(0, 200)}` : ' (empty body)'}`);
   }
-  return parseQrResponse(res);
+  return readQrBlob(res);
+}
+
+/** The provider's PNG bytes for `data`, sharing one request while it is in flight. */
+export function qrBlob(data: string): Promise<Blob> {
+  const pending = inFlight.get(data);
+  if (pending) return pending;
+
+  const request = fetchQrBlob(data).finally(() => inFlight.delete(data));
+  inFlight.set(data, request);
+  return request;
+}
+
+/** Stable async contract: always resolves to an <img>-usable src. */
+export async function qrUrl(data: string): Promise<string> {
+  return URL.createObjectURL(await qrBlob(data));
 }
 
 export async function downloadQr(data: string, filename: string): Promise<void> {
