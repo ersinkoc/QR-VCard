@@ -3,6 +3,10 @@ dist/
 dev-dist/
 .temp_files/
 
+# Local secrets. The QR proxy reads QR_API_KEY from the root .env, so this
+# pattern matters as much as directus/.env below; .env.example stays tracked.
+.env
+
 # Directus (Docker volumes live in named volumes; local-only artifacts below)
 directus/.env
 directus/data.db
@@ -13,3 +17,5 @@ directus/.bootstrap-state.json
 !/.wrongstack/
 /.wrongstack/*
 !/.wrongstack/project.json
+
+.dfmt/
