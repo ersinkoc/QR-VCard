@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // stores so the adapter module can be imported in the node test environment.
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
 
-const { createPanelUser, deleteCard, directus, listAssignableRoles, listCards, updateCard } = await import('./directus');
+const { createCard, createPanelUser, deleteCard, directus, listAssignableRoles, listCards, updateCard } =
+  await import('./directus');
 type VCard = import('./directus').VCard;
 
 const admin = { id: 'u-admin', email: 'admin@local.dev', role_name: 'Administrator' };
@@ -64,10 +65,28 @@ describe('card mutation guards', () => {
 });
 
 describe('card listing', () => {
-  it('returns the rows the API produced, in one request', async () => {
+  it('returns the rows the API produced, normalised in one request', async () => {
     const spy = vi.spyOn(directus, 'request').mockResolvedValue([ownCard]);
 
-    await expect(listCards(user)).resolves.toEqual([ownCard]);
+    // A plain user's listing carries no owner email: the expansion is only
+    // requested for privileged actors, and this row came back unexpanded.
+    await expect(listCards(user)).resolves.toEqual([{ ...ownCard, owner_email: null }]);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('card creation', () => {
+  it('creates a card with one request', async () => {
+    const spy = vi.spyOn(directus, 'request').mockResolvedValue({ id: 'c3' });
+
+    await expect(createCard({ code: 'new123' })).resolves.toEqual({ id: 'c3' });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates a card on behalf of another owner with one request', async () => {
+    const spy = vi.spyOn(directus, 'request').mockResolvedValue({ id: 'c4' });
+
+    await expect(createCard({ code: 'new456' }, 'u-ada')).resolves.toEqual({ id: 'c4' });
     expect(spy).toHaveBeenCalledTimes(1);
   });
 });

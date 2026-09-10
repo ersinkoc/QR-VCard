@@ -17,7 +17,7 @@ import {
   shortUrl,
   updateCard,
 } from '../lib/directus';
-import { isPrivileged } from '../lib/ownership';
+import { isPrivileged, ownerLabel } from '../lib/ownership';
 import { downloadQr } from '../lib/qr';
 
 function LoginForm({ onLoggedIn }: { onLoggedIn: () => void }) {
@@ -284,6 +284,7 @@ export default function PanelPage() {
   const [cards, setCards] = useState<VCard[] | null>(null);
   const [editing, setEditing] = useState<'new' | VCard | null>(null);
   const [qrCard, setQrCard] = useState<VCard | null>(null);
+  const [assignableUsers, setAssignableUsers] = useState<PanelUser[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const loadMe = useCallback(async () => {
@@ -312,6 +313,15 @@ export default function PanelPage() {
   useEffect(() => {
     void loadCards();
   }, [loadCards]);
+
+  // Admins may create cards on someone else's behalf, so they need the account
+  // list. A failure here only removes the picker, never blocks the panel.
+  useEffect(() => {
+    if (!me || !isPrivileged(me)) return;
+    void listPanelUsers()
+      .then(setAssignableUsers)
+      .catch(() => setAssignableUsers([]));
+  }, [me]);
 
   /** Every card mutation goes through the ownership guard in the adapter. */
   async function mutate(action: () => Promise<unknown>) {
@@ -373,6 +383,7 @@ export default function PanelPage() {
           <div className="mt-6">
             <VCardForm
               me={me}
+              ownerOptions={isPrivileged(me) ? assignableUsers.map((u) => ({ id: u.id, email: u.email })) : undefined}
               initial={editing === 'new' ? null : editing}
               onCancel={() => setEditing(null)}
               onSaved={() => {
@@ -405,6 +416,7 @@ export default function PanelPage() {
                         {card.status === 'draft' && <span className="ml-2 rounded-full border border-line px-2 py-0.5 text-xs text-muted">draft</span>}
                       </p>
                       <p className="code truncate text-muted">{url}</p>
+                      {isPrivileged(me) && <p className="text-xs text-muted">owner: {ownerLabel(card, me)}</p>}
                     </div>
                     <CopyButton text={url} label="Copy URL" />
                     <button type="button" className="btn btn-secondary" onClick={() => setQrCard(card)}>

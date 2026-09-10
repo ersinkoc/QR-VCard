@@ -158,6 +158,12 @@ Admins get a **Users** section in the panel (`/panel`): list accounts, create on
 password and a role, and set a new password for an existing account. Each person then signs in at
 `/panel` with their own credentials and sees only their own cards.
 
+Admins can also **create a card on someone else's behalf**: the new-card form offers an *Owner*
+picker, and the chosen account is written to `user_created` (`createCard(input, ownerId)` — omitted,
+Directus stamps the creator). The card list names each card's owner for privileged actors, using the
+expanded `user_created.email`; plain users are never shown other owners, and the expansion is not
+even requested for them, since reading `directus_users` is an admin permission.
+
 **Enforcement is app-side, and that is a real limitation.** Ownership is checked in two places:
 `listCards()` filters by `user_created`, and `updateCard()` / `deleteCard()` refuse any card the
 signed-in user does not own (`src/lib/ownership.ts`). Directus itself can only enforce this

@@ -8,7 +8,7 @@ import {
   rest,
   updateItem,
 } from '@directus/sdk';
-import { canManage, cardScopeFilter } from './ownership';
+import { canManage, cardScopeFilter, assignOwner, isPrivileged } from './ownership';
 
 export { isPrivileged } from './ownership';
 
@@ -29,6 +29,8 @@ export interface VCard {
   date_created: string | null;
   /** Owner. Set by Directus on create; the basis of the ownership checks. */
   user_created: string | null;
+  /** Owner's email — only populated for privileged actors (see listCards). */
+  owner_email?: string | null;
 }
 
 export interface MeInfo {
@@ -82,14 +84,31 @@ export async function fetchMe(): Promise<MeInfo> {
  * still read the collection directly. See README, "Roles and card ownership".
  */
 export async function listCards(me: MeInfo): Promise<VCard[]> {
+  // Only privileged actors may read directus_users, so the owner's email is
+  // requested for them alone; a plain user's listing is already scoped to them.
+  const fields: (string | Record<string, string[]>)[] = isPrivileged(me) ? ['*', { user_created: ['id', 'email'] }] : ['*'];
   const rows = (await directus.request(
-    readItems('vcards', { sort: ['-date_created'], limit: 200, filter: cardScopeFilter(me) }),
-  )) as VCard[];
-  return rows;
+    readItems('vcards', { fields, sort: ['-date_created'], limit: 200, filter: cardScopeFilter(me) }),
+  )) as (Omit<VCard, 'user_created'> & { user_created: string | { id: string; email?: string | null } | null })[];
+
+  return rows.map((row): VCard => {
+    // Destructure `user_created` out of the spread so the union type (owner id
+    // string, or the expanded object) never leaks into the normalised VCard.
+    const { user_created: owner, ...rest } = row;
+    if (owner !== null && typeof owner === 'object') {
+      return { ...rest, user_created: owner.id, owner_email: owner.email ?? null };
+    }
+    return { ...rest, user_created: owner, owner_email: null };
+  });
 }
 
-export async function createCard(input: Partial<VCard> & { code: string }): Promise<VCard> {
-  return directus.request(createItem('vcards', input)) as Promise<VCard>;
+/**
+ * Creates a card. `ownerId` lets an admin create one on another user's behalf;
+ * omitted, Directus stamps the creating user as the owner.
+ */
+export async function createCard(input: Partial<VCard> & { code: string }, ownerId?: string | null): Promise<VCard> {
+  const body = assignOwner({ ...input } as Record<string, unknown>, ownerId);
+  return directus.request(createItem('vcards', body)) as Promise<VCard>;
 }
 
 function assertCanManage(card: VCard, me: MeInfo): void {

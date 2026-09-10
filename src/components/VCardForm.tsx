@@ -9,6 +9,8 @@ const ACCENTS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#db2777
 interface Props {
   me: MeInfo; // the signed-in actor; the adapter checks card ownership against it
   initial: VCard | null; // null = create
+  /** Present for admins: create the card on behalf of one of these accounts. */
+  ownerOptions?: { id: string; email: string }[];
   onCancel: () => void;
   onSaved: (card: VCard) => void;
 }
@@ -26,12 +28,14 @@ const FIELDS: { key: FieldKey; label: string; placeholder: string; half?: boolea
   { key: 'note', label: 'Note', placeholder: 'Anything you want visitors to read' },
 ];
 
-export default function VCardForm({ me, initial, onCancel, onSaved }: Props) {
+export default function VCardForm({ me, initial, ownerOptions, onCancel, onSaved }: Props) {
   const [values, setValues] = useState<Record<FieldKey, string>>(() =>
     Object.fromEntries(FIELDS.map(({ key }) => [key, (initial?.[key] as string | null) ?? ''])) as Record<FieldKey, string>,
   );
   const [accent, setAccent] = useState(initial?.accent_color ?? ACCENTS[0]!);
   const [status, setStatus] = useState<'draft' | 'published'>(initial?.status ?? 'draft');
+  // '' means "keep it mine" — the adapter omits user_created then.
+  const [ownerId, setOwnerId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,7 +49,7 @@ export default function VCardForm({ me, initial, onCancel, onSaved }: Props) {
       const payload: Partial<VCard> = { ...values, accent_color: accent, status };
       const saved = initial
         ? await updateCard(me, initial, payload)
-        : await createCard({ ...payload, code: generateCode() });
+        : await createCard({ ...payload, code: generateCode() }, ownerId || undefined);
       onSaved(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -97,6 +101,22 @@ export default function VCardForm({ me, initial, onCancel, onSaved }: Props) {
             <option value="published">Published (QR page live)</option>
           </select>
         </div>
+
+        {!initial && ownerOptions && ownerOptions.length > 0 && (
+          <div>
+            <label className="label" htmlFor="f-owner">
+              Owner (create on behalf of)
+            </label>
+            <select id="f-owner" className="input" value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              <option value="">Me ({me.email})</option>
+              {ownerOptions.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.email}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {initial && (
