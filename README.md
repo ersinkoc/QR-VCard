@@ -66,15 +66,18 @@ data. It prefers a static admin token and falls back to logging in with `DIRECTU
 App (`/.env`):
 
 - `VITE_DIRECTUS_URL` — Directus base URL (default `http://localhost:8055`).
-- `VITE_QR_API_URL` — **required** QR API base URL (for the Art QR service,
-  `https://artqrcode.oxog.net`). The app POSTs to `{base}/QR/create`.
-- `VITE_QR_API_KEY` — **required** key for that endpoint, sent as the `ApiKey` header (the bare
-  key; the Swagger's `ApiKey <key>` form is rejected with 401). **Warning:** Vite inlines `VITE_*`
-  values into the client bundle, so this key is readable by anyone who loads the app — fine for
-  local development, but use a server-side proxy before shipping anything public.
+- `VITE_QR_PROXY_URL` — optional. Endpoint the app POSTs to for QR codes; defaults to the
+  same-origin path `/api/qr`, which Vite forwards to the local proxy in development. Set it only
+  when the proxy is served from a different origin. **No QR API key is configured client-side** —
+  the key lives in the proxy (see below).
 
-Both must be set, otherwise QR generation fails with an explicit configuration error rather than
-rendering nothing.
+Server-side variables, read by `npm run qr:proxy` (never sent to the browser):
+
+- `QR_API_URL` — provider base URL; default `https://artqrcode.oxog.net`.
+- `QR_API_KEY` — provider key, sent as the `ApiKey` header by the proxy.
+- `PORT` — proxy listen port; default `8787`.
+- `QR_ALLOWED_ORIGINS` — comma-separated browser origins allowed to call the proxy; default
+  `http://localhost:5173` (the Vite dev server). Use `*` to allow any.
 
 Directus container (`directus/.env`, created from `directus/.env.example`):
 
@@ -83,11 +86,35 @@ Directus container (`directus/.env`, created from `directus/.env.example`):
 - `DIRECTUS_ADMIN_TOKEN` — optional static admin token for scripted provisioning.
 - `EDITOR_*`, `USER_*`, `SEED_CODE` — panel credentials and the demo card code.
 
+## QR proxy (keeps the API key off the client)
+
+The provider requires a secret `ApiKey` header, and anything in a `VITE_*` variable is **inlined
+into the client bundle** — readable by every visitor. So the browser never calls the provider:
+`src/lib/qr.ts` POSTs to `/api/qr` and `server/qr-proxy.mjs` (dependency-free, `node:http`)
+attaches the key and forwards the request, passing the provider's status, content type and body
+straight back.
+
+```bash
+npm run qr:proxy   # http://localhost:8787/api/qr, loads the root .env
+npm run dev        # app on :5173 — Vite forwards /api/qr to the proxy, same-origin
+```
+
+Set `QR_API_KEY` (and `QR_API_URL` if not the default) in the root `.env`; the proxy logs the
+upstream status per request and never logs the key. Available endpoints: `POST /api/qr`,
+`OPTIONS /api/qr` (CORS preflight) and `GET /healthz` (reports whether a key is configured).
+
+In development the Vite dev server proxies `/api/qr` (see `vite.config.ts`), so the browser makes a
+same-origin request and no CORS is involved. For a deployment where the app and the proxy are on
+different origins, set `VITE_QR_PROXY_URL` and list the app's origin in `QR_ALLOWED_ORIGINS`;
+otherwise put the proxy behind the same host (for example a reverse proxy on `/api/qr`) and leave
+`VITE_QR_PROXY_URL` unset.
+
 ## QR API status (blocked upstream)
 
-The request side is implemented: `src/lib/qr.ts` POSTs `{VITE_QR_API_URL}/QR/create` with an
-`ApiKey` header and a JSON `InputParameters` body (the link in `inputText`, plus `exportWidth`,
-`exportPNG` and `eccLevel`).
+The request side is implemented: `src/lib/qr.ts` POSTs a JSON `InputParameters` body (the link in
+`inputText`, plus `exportWidth`, `exportPNG` and `eccLevel`) to the **server-side proxy** at
+`/api/qr`, which attaches the provider's `ApiKey` header and forwards to
+`{QR_API_URL}/QR/create`. The browser never holds the key.
 
 **Response parsing is deliberately not implemented yet.** As of 2026-09-10 the provider's endpoint
 answers every authenticated request with a bare `500` — no `Content-Type`, zero bytes — for every
@@ -148,10 +175,12 @@ public deployment without a license or another enforcement point.
 src/
   lib/directus.ts     infrastructure adapter — the ONLY place that talks to Directus
   lib/vcf.ts          pure vCard 3.0 builder + .vcf download
-  lib/qr.ts           QR adapter seam: POST /QR/create on the external QR API
+  lib/qr.ts           QR adapter seam: POSTs to the proxy (never holds the key)
   lib/short-code.ts   unambiguous short codes (no 0/O/1/l/I)
   pages/              HomePage, ScanPage (/c/:code), PanelPage (login + CRUD + QR)
   components/         QrDisplay, CopyButton, ContactActions, VCardForm
+server/
+  qr-proxy.mjs        attaches the provider's ApiKey server-side; CORS + /healthz
 directus/
   docker-compose.yml  local Directus 12 + SQLite volume
   bootstrap.mjs       idempotent provisioning (collection, policies, roles, users, seed)

@@ -15,19 +15,41 @@ afterEach(() => {
 
 describe('qrRequest', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_QR_API_URL', 'https://artqrcode.oxog.net');
-    vi.stubEnv('VITE_QR_API_KEY', 'test-key');
+    vi.stubEnv('VITE_QR_PROXY_URL', 'https://app.example.com/api/qr');
   });
 
-  it('targets POST /QR/create on the configured base', () => {
+  it('POSTs to the configured proxy endpoint', () => {
     const { url, init } = qrRequest('https://host/c/abc');
-    expect(url).toBe('https://artqrcode.oxog.net/QR/create');
+    expect(url).toBe('https://app.example.com/api/qr');
     expect(init.method).toBe('POST');
   });
 
-  it('sends the ApiKey header and a JSON InputParameters body', () => {
+  it('defaults to the same-origin proxy path when nothing is configured', () => {
+    vi.stubEnv('VITE_QR_PROXY_URL', '');
+    expect(qrRequest('x').url).toBe('/api/qr');
+  });
+
+  it('accepts an explicit same-origin path', () => {
+    vi.stubEnv('VITE_QR_PROXY_URL', '/backend/qr');
+    expect(qrRequest('x').url).toBe('/backend/qr');
+  });
+
+  it('rejects a malformed proxy URL instead of sending links to an arbitrary host', () => {
+    vi.stubEnv('VITE_QR_PROXY_URL', 'wrong-host/api/qr'); // no scheme, no leading slash
+    expect(() => qrRequest('x')).toThrow(/VITE_QR_PROXY_URL/);
+
+    vi.stubEnv('VITE_QR_PROXY_URL', 'javascript:alert(1)');
+    expect(() => qrRequest('x')).toThrow(/VITE_QR_PROXY_URL/);
+  });
+
+  it('trims surrounding whitespace and trailing slashes from the proxy URL', () => {
+    vi.stubEnv('VITE_QR_PROXY_URL', '  https://app.example.com/api/qr///  ');
+    expect(qrRequest('x').url).toBe('https://app.example.com/api/qr');
+  });
+
+  it('sends a JSON InputParameters body', () => {
     const { init } = qrRequest('https://host/c/abc');
-    expect(init.headers).toMatchObject({ 'Content-Type': 'application/json', ApiKey: 'test-key' });
+    expect(init.headers).toMatchObject({ 'Content-Type': 'application/json' });
     expect(JSON.parse(String(init.body))).toMatchObject({
       inputText: 'https://host/c/abc',
       exportPNG: true,
@@ -36,23 +58,15 @@ describe('qrRequest', () => {
     });
   });
 
-  it('trims surrounding whitespace and trailing slashes from the base URL', () => {
-    vi.stubEnv('VITE_QR_API_URL', '  https://artqrcode.oxog.net///  ');
-    expect(qrRequest('x').url).toBe('https://artqrcode.oxog.net/QR/create');
-  });
-
-  it('throws when the base URL is not configured', () => {
-    vi.stubEnv('VITE_QR_API_URL', '');
-    expect(() => qrRequest('x')).toThrow(/VITE_QR_API_URL/);
-  });
-
-  it('throws when the API key is not configured', () => {
-    vi.stubEnv('VITE_QR_API_KEY', '');
-    expect(() => qrRequest('x')).toThrow(/VITE_QR_API_KEY/);
+  it('never sends an authorization header — the ApiKey lives only in the proxy', () => {
+    const { init } = qrRequest('https://host/c/abc');
+    const headerNames = Object.keys(init.headers as Record<string, string>).map((h) => h.toLowerCase());
+    expect(headerNames).toEqual(['content-type']);
+    expect(JSON.stringify(init)).not.toMatch(/apikey|authorization|bearer/i);
   });
 });
 
-describe('qrUrl against a stub server (real HTTP, fake provider)', () => {
+describe('qrUrl against a stub proxy (real HTTP, fake provider)', () => {
   type Reply = { status: number; contentType?: string; body?: Buffer };
   const seen: { method?: string; headers: Record<string, string | string[] | undefined>; body: string }[] = [];
   let reply: Reply = { status: 500 };
@@ -80,11 +94,10 @@ describe('qrUrl against a stub server (real HTTP, fake provider)', () => {
   beforeEach(() => {
     seen.length = 0;
     reply = { status: 500 };
-    vi.stubEnv('VITE_QR_API_URL', base);
-    vi.stubEnv('VITE_QR_API_KEY', 'test-key');
+    vi.stubEnv('VITE_QR_PROXY_URL', base);
   });
 
-  it('POSTs the link with the ApiKey header to /QR/create', async () => {
+  it('POSTs the link to the proxy without any credential', async () => {
     reply = { status: 200, contentType: 'image/png', body: PNG };
 
     const res = await requestQr('https://host/c/abc');
@@ -92,16 +105,26 @@ describe('qrUrl against a stub server (real HTTP, fake provider)', () => {
     expect(res.status).toBe(200);
     const last = seen.at(-1);
     expect(last?.method).toBe('POST');
-    expect(last?.headers.apikey).toBe('test-key'); // node lower-cases header names
+    expect(last?.headers.apikey).toBeUndefined(); // node lower-cases header names
+    expect(last?.headers.authorization).toBeUndefined();
     expect(JSON.parse(last?.body ?? '{}').inputText).toBe('https://host/c/abc');
   });
 
-  it("rejects a 500 the way the provider currently answers (empty body, no content type)", async () => {
+  it('surfaces a provider 500 passed through the proxy (empty body, no content type)', async () => {
     await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/HTTP 500 \(empty body\)/);
   });
 
   it('rejects a 200 until response parsing is implemented, rather than guessing the shape', async () => {
     reply = { status: 200, contentType: 'image/png', body: PNG };
     await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/not implemented/);
+  });
+
+  it('reports a missing proxy route when the origin answers with the SPA shell', async () => {
+    reply = {
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: Buffer.from('<!doctype html><html><body>app</body></html>'),
+    };
+    await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/returned HTML.*no route handled/);
   });
 });
