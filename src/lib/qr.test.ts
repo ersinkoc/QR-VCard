@@ -154,6 +154,19 @@ describe('qrUrl against a stub proxy (real HTTP, fake provider)', () => {
     await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/expected raw image bytes/);
   });
 
+  it('mints a distinct blob URL per call, so each caller owns its own', async () => {
+    reply = { status: 200, contentType: 'image/png', body: PNG };
+
+    const first = await qrUrl('https://host/c/abc');
+    const second = await qrUrl('https://host/c/abc');
+
+    // This is why downloadQr may safely revoke the URL it created: QrDisplay's
+    // URL comes from a different qrUrl() call and is revoked by QrDisplay.
+    expect(first).not.toBe(second);
+    URL.revokeObjectURL(first);
+    URL.revokeObjectURL(second);
+  });
+
   it('downloads straight from the blob URL without minting a second one', async () => {
     reply = { status: 200, contentType: 'image/png', body: PNG };
 

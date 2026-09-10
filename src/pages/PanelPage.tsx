@@ -124,6 +124,12 @@ function UsersPanel() {
       const [list, assignable] = await Promise.all([listPanelUsers(), listAssignableRoles()]);
       setUsers(list);
       setRoles(assignable);
+      if (assignable.length === 0) {
+        // Otherwise the form is silently inert: no <option> to pick and the
+        // submit button stays disabled with nothing explaining why.
+        setError('No assignable roles were returned — provision vcard-user or vcard-editor in Directus first.');
+        return;
+      }
       setRoleId((current) => current || assignable.find((r) => r.name === 'vcard-user')?.id || assignable[0]?.id || '');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
