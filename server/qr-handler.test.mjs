@@ -81,6 +81,22 @@ describe('qrConfigFromEnv', () => {
     expect(config.provider).toBe('https://provider.test');
     expect(config.allowedOrigins).toEqual(['https://a.example.com', 'https://b.example.com']);
   });
+
+  it('reads the rate limit env with sane fallbacks', () => {
+    expect(qrConfigFromEnv({})).toMatchObject({ rateMax: 30, rateWindowMs: 60_000 });
+    expect(
+      qrConfigFromEnv({ QR_RATE_LIMIT_MAX: '10', QR_RATE_LIMIT_WINDOW_MS: '5000' }),
+    ).toMatchObject({ rateMax: 10, rateWindowMs: 5000 });
+    // Invalid values fall back to the defaults: the limit never turns itself off.
+    expect(qrConfigFromEnv({ QR_RATE_LIMIT_MAX: '0' }).rateMax).toBe(30);
+    expect(qrConfigFromEnv({ QR_RATE_LIMIT_MAX: '-3' }).rateMax).toBe(30);
+    expect(qrConfigFromEnv({ QR_RATE_LIMIT_MAX: 'many' }).rateMax).toBe(30);
+    expect(qrConfigFromEnv({ QR_RATE_LIMIT_WINDOW_MS: 'nope' }).rateWindowMs).toBe(60_000);
+    // Trusted-proxy keying is strictly opt-in: the exact value '1'.
+    expect(qrConfigFromEnv({ QR_TRUST_PROXY: '1' }).trustProxy).toBe(true);
+    expect(qrConfigFromEnv({ QR_TRUST_PROXY: 'true' }).trustProxy).toBe(false);
+    expect(qrConfigFromEnv({}).trustProxy).toBe(false);
+  });
 });
 
 describe('the origin gate', () => {
@@ -227,5 +243,178 @@ describe('everything else', () => {
 
     expect(handled).toBe(false);
     expect(res.headersSent).toBe(false);
+  });
+});
+
+describe('the rate limit', () => {
+  /**
+   * The limiter reads Date.now() for its fixed windows, so tests pin the clock
+   * and advance it explicitly instead of sleeping.
+   */
+  function pinClock(at) {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(at);
+    return (ms) => {
+      at += ms;
+      spy.mockReturnValue(at);
+    };
+  }
+
+  /** Fires one POST from 203.0.113.7 and resolves with the captured response. */
+  function fire(h, extraHeaders = {}) {
+    const res = makeRes();
+    return h
+      .handle(
+        makeReq({
+          method: 'POST',
+          url: '/api/qr',
+          headers: { host: 'cards.example.com', 'x-forwarded-for': '203.0.113.7', ...extraHeaders },
+        }),
+        res,
+      )
+      .then(() => res);
+  }
+
+  it('allows requests up to the cap, answers 429 beyond it and resets after the window', async () => {
+    const advance = pinClock(1_700_000_000_000);
+    try {
+      const h = handler({ rateMax: 2, rateWindowMs: 60_000, trustProxy: true });
+
+      expect((await fire(h)).status).toBe(500); // under the cap: stops at the key check
+      expect((await fire(h)).status).toBe(500);
+      const third = await fire(h);
+      expect(third.status).toBe(429);
+      expect(third.headers['Retry-After']).toBe('60');
+      expect(third.json().error).toMatch(/rate limit exceeded/);
+
+      advance(60_001);
+      expect((await fire(h)).status).toBe(500); // fresh window: the client counts from zero
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps the CORS headers on the 429 so the browser sees the refusal', async () => {
+    pinClock(1_700_000_000_000);
+    try {
+      const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
+      await fire(h); // the cap: one allowed request
+      const second = await fire(h, { origin: 'http://localhost:5173' });
+
+      expect(second.status).toBe(429);
+      expect(second.headers['Access-Control-Allow-Origin']).toBe('http://localhost:5173');
+      expect(second.headers.Vary).toBe('Origin');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('gives every client its own bucket', async () => {
+    pinClock(1_700_000_000_000);
+    try {
+      const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
+      await fire(h); // exhausts 203.0.113.7
+
+      const other = makeRes();
+      await h.handle(
+        makeReq({
+          method: 'POST',
+          url: '/api/qr',
+          headers: { host: 'cards.example.com', 'x-forwarded-for': '203.0.113.8' },
+        }),
+        other,
+      );
+
+      expect(other.status).toBe(500); // a different client is not affected
+
+      // The key is the LAST hop (the one the edge appended), not the client's first.
+      const spoofed = makeRes();
+      await h.handle(
+        makeReq({
+          method: 'POST',
+          url: '/api/qr',
+          headers: { host: 'cards.example.com', 'x-forwarded-for': '9.9.9.9, 203.0.113.7' },
+        }),
+        spoofed,
+      );
+      expect(spoofed.status).toBe(429); // same bucket as 203.0.113.7 despite the forged first hop
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('never spends budget on the OPTIONS preflight or /healthz', async () => {
+    pinClock(1_700_000_000_000);
+    try {
+      const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
+      await fire(h, { 'x-forwarded-for': '198.51.100.4' }); // cap reached for that client
+      expect((await fire(h, { 'x-forwarded-for': '198.51.100.4' })).status).toBe(429);
+
+      const preflight = makeRes();
+      await h.handle(
+        makeReq({
+          method: 'OPTIONS',
+          url: '/api/qr',
+          headers: { origin: 'http://localhost:5173', host: 'cards.example.com', 'x-forwarded-for': '198.51.100.4' },
+        }),
+        preflight,
+      );
+      expect(preflight.status).toBe(204);
+
+      const health = makeRes();
+      await h.handle(
+        makeReq({ method: 'GET', url: '/healthz', headers: { 'x-forwarded-for': '198.51.100.4' } }),
+        health,
+      );
+      expect(health.status).toBe(200);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('defaults to the socket address, so rotating X-Forwarded-For does not mint budget', async () => {
+    const h = handler({ rateMax: 1, rateWindowMs: 60_000 });
+
+    const request = (xff) => {
+      const req = makeReq({
+        method: 'POST',
+        url: '/api/qr',
+        headers: { host: 'cards.example.com', 'x-forwarded-for': xff },
+      });
+      req.socket = { remoteAddress: '10.0.0.9' };
+      const res = makeRes();
+      return h.handle(req, res).then(() => res);
+    };
+
+    expect((await request('203.0.113.1')).status).toBe(500); // allowed, socket-keyed
+    const rotated = await request('203.0.113.2'); // a different forged header, same socket
+    expect(rotated.status).toBe(429); // still the same bucket: rotation buys nothing
+  });
+
+  it('does not spend budget on a CORS-rejected request', async () => {
+    const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
+
+    // Refused at the CORS gate, before the limiter ever sees the client.
+    const refused = makeRes();
+    await h.handle(
+      makeReq({
+        method: 'POST',
+        url: '/api/qr',
+        headers: { origin: 'https://evil.example', host: 'cards.example.com', 'x-forwarded-for': '203.0.113.9' },
+      }),
+      refused,
+    );
+    expect(refused.status).toBe(403);
+
+    // The 403 bought no budget: this client still has its full allowance.
+    const allowed = makeRes();
+    await h.handle(
+      makeReq({
+        method: 'POST',
+        url: '/api/qr',
+        headers: { host: 'cards.example.com', 'x-forwarded-for': '203.0.113.9' },
+      }),
+      allowed,
+    );
+    expect(allowed.status).toBe(500); // stopped by the key check, not 429
   });
 });

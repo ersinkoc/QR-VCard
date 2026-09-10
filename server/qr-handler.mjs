@@ -18,18 +18,43 @@
  *   OPTIONS /api/qr  CORS preflight, for a genuine cross-origin caller
  *   GET /healthz     liveness; reports whether a key is configured (never the key)
  *
+ * POST /api/qr is rate limited per client — the provider is metered and the
+ * endpoint is public. By default the client is the socket address, which header
+ * rotation cannot change; with QR_TRUST_PROXY=1 it is the LAST X-Forwarded-For
+ * hop — the value the edge proxy appended, which a client cannot forge (direct
+ * socket keying behind a proxy would collapse every visitor into one bucket).
+ * Preflights, /healthz and CORS-rejected requests never consume budget. Beyond
+ * the cap the answer is 429 JSON with a Retry-After header.
+ *
  * Configuration (process environment):
  *   QR_API_KEY          required  provider key, sent as the `ApiKey` header
  *   QR_API_URL          optional  provider base, default https://artqrcode.oxog.net
  *   QR_ALLOWED_ORIGINS  optional  comma list of browser origins allowed to call the
  *                                 proxy CROSS-origin, default http://localhost:5173;
  *                                 `*` allows any origin
+ *   QR_RATE_LIMIT_MAX         optional  POST /api/qr cap per client per window,
+ *                                       default 30; invalid values fall back to the
+ *                                       default — the limit has no off switch
+ *   QR_RATE_LIMIT_WINDOW_MS   optional  window length, default 60000
+ *   QR_TRUST_PROXY            optional  set to 1 behind a reverse proxy that appends
+ *                                       X-Forwarded-For (Railway, Coolify, nginx…)
+ *                                       to rate-limit per real client instead of per
+ *                                       proxy socket address
  */
 
 const MAX_BODY = 64 * 1024;
 
 export const QR_PATH = '/api/qr';
 export const HEALTH_PATH = '/healthz';
+
+/** Rate-limit defaults: generous for a human, a seatbelt against a metered provider. */
+const DEFAULT_RATE_LIMIT_MAX = 30;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 export function qrConfigFromEnv(env = process.env) {
   return {
@@ -39,6 +64,9 @@ export function qrConfigFromEnv(env = process.env) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    rateMax: positiveInt(env.QR_RATE_LIMIT_MAX, DEFAULT_RATE_LIMIT_MAX),
+    rateWindowMs: positiveInt(env.QR_RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_LIMIT_WINDOW_MS),
+    trustProxy: env.QR_TRUST_PROXY === '1',
   };
 }
 
@@ -112,6 +140,48 @@ function requestHost(req) {
 
 export function createQrHandler(config = qrConfigFromEnv()) {
   const { provider, key, allowedOrigins } = config;
+  const rateMax = config.rateMax ?? DEFAULT_RATE_LIMIT_MAX;
+  const rateWindowMs = config.rateWindowMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS;
+  const trustProxy = config.trustProxy ?? false;
+
+  // Fixed-window counters, one bucket per client. Keyed on the socket address by
+  // default: rotating client-supplied headers cannot mint fresh budget. Behind a
+  // reverse proxy (QR_TRUST_PROXY=1) the key is the LAST X-Forwarded-For hop —
+  // the address the edge appended, which a client cannot forge — because without
+  // it every visitor would share the proxy's single socket address. Both modes
+  // bound the bucket map to roughly the number of real clients.
+  const rateBuckets = new Map();
+
+  function rateKeyFor(req) {
+    if (trustProxy) {
+      const forwarded = req.headers['x-forwarded-for'];
+      const hops = String(Array.isArray(forwarded) ? forwarded[0] : (forwarded ?? ''))
+        .split(',')
+        .map((hop) => hop.trim())
+        .filter(Boolean);
+      if (hops.length > 0) return hops[hops.length - 1];
+    }
+    return req.socket?.remoteAddress || 'unknown';
+  }
+
+  function checkRateLimit(key, now) {
+    // Opportunistic sweep so abandoned buckets cannot grow without bound.
+    if (rateBuckets.size >= 10_000) {
+      for (const [k, bucket] of rateBuckets) {
+        if (now - bucket.start >= rateWindowMs) rateBuckets.delete(k);
+      }
+    }
+    const bucket = rateBuckets.get(key);
+    if (!bucket || now - bucket.start >= rateWindowMs) {
+      rateBuckets.set(key, { start: now, count: 1 });
+      return { limited: false };
+    }
+    bucket.count += 1;
+    if (bucket.count > rateMax) {
+      return { limited: true, retryAfterSec: Math.max(1, Math.ceil((bucket.start + rateWindowMs - now) / 1000)) };
+    }
+    return { limited: false };
+  }
 
   async function handle(req, res) {
     const path = (req.url ?? '').split('?')[0];
@@ -142,6 +212,18 @@ export function createQrHandler(config = qrConfigFromEnv()) {
 
     if (req.method !== 'POST') {
       sendJson(res, 405, { error: 'use POST' }, { ...corsHeaders, Allow: 'POST, OPTIONS' });
+      return true;
+    }
+
+    const rate = checkRateLimit(rateKeyFor(req), Date.now());
+    if (rate.limited) {
+      console.log(`[qr] POST ${QR_PATH} -> 429 rate limited`);
+      sendJson(
+        res,
+        429,
+        { error: `rate limit exceeded: max ${rateMax} requests per ${Math.round(rateWindowMs / 1000)}s` },
+        { ...corsHeaders, 'Retry-After': String(rate.retryAfterSec) },
+      );
       return true;
     }
 
@@ -179,5 +261,5 @@ export function createQrHandler(config = qrConfigFromEnv()) {
     return true;
   }
 
-  return { handle, provider, keyConfigured: key.length > 0, allowedOrigins };
+  return { handle, provider, keyConfigured: key.length > 0, allowedOrigins, rateMax, rateWindowMs, trustProxy };
 }

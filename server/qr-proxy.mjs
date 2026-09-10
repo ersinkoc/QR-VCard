@@ -12,8 +12,9 @@
  *
  *   npm run qr:proxy        # loads the root .env; listens on PORT (default 8787)
  *
- * Configuration: QR_API_KEY (required), QR_API_URL, PORT, QR_ALLOWED_ORIGINS — see
- * the module header of server/qr-handler.mjs.
+ * Configuration: QR_API_KEY (required), QR_API_URL, PORT, QR_ALLOWED_ORIGINS,
+ * QR_RATE_LIMIT_MAX, QR_RATE_LIMIT_WINDOW_MS, QR_TRUST_PROXY — see the module
+ * header of server/qr-handler.mjs.
  */
 import { createServer } from 'node:http';
 import { createQrHandler, qrConfigFromEnv } from './qr-handler.mjs';
@@ -42,6 +43,9 @@ server.listen(PORT, () => {
   console.log(`[qr-proxy] listening on http://localhost:${PORT}/api/qr`);
   console.log(`[qr-proxy] provider: ${qr.provider}`);
   console.log(`[qr-proxy] allowed origins (cross-origin callers): ${qr.allowedOrigins.join(', ')}`);
+  console.log(
+    `[qr-proxy] rate limit: ${qr.rateMax} requests per ${Math.round(qr.rateWindowMs / 1000)}s per client${qr.trustProxy ? '' : ' (socket-keyed; set QR_TRUST_PROXY=1 behind a reverse proxy)'}`,
+  );
   if (!qr.keyConfigured) {
     console.warn('[qr-proxy] WARNING: QR_API_KEY is not set — POST requests will fail with 500');
   }

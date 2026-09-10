@@ -84,6 +84,11 @@ Server-side variables, read by `npm run qr:proxy` (never sent to the browser):
   to serve another directory).
 - `QR_ALLOWED_ORIGINS` — comma-separated browser origins allowed to call the proxy; default
   `http://localhost:5173` (the Vite dev server). Use `*` to allow any.
+- `QR_RATE_LIMIT_MAX` / `QR_RATE_LIMIT_WINDOW_MS` — POST /api/qr is rate limited per client
+  (defaults `30` / `60000`); beyond the cap the answer is `429` + `Retry-After`, which protects
+  the metered provider. Set `QR_TRUST_PROXY=1` behind a reverse proxy so the limit keys per
+  real client (the last X-Forwarded-For hop your edge appended) instead of per proxy socket
+  address.
 
 Directus container (`directus/.env`, created from `directus/.env.example`):
 
