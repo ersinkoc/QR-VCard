@@ -104,10 +104,13 @@ upstream status per request and never logs the key. Available endpoints: `POST /
 `OPTIONS /api/qr` (CORS preflight) and `GET /healthz` (reports whether a key is configured).
 
 In development the Vite dev server proxies `/api/qr` (see `vite.config.ts`), so the browser makes a
-same-origin request and no CORS is involved. For a deployment where the app and the proxy are on
-different origins, set `VITE_QR_PROXY_URL` and list the app's origin in `QR_ALLOWED_ORIGINS`;
-otherwise put the proxy behind the same host (for example a reverse proxy on `/api/qr`) and leave
-`VITE_QR_PROXY_URL` unset.
+same-origin request and no CORS is involved. **Run both processes**: `npm run dev` for the app and
+`npm run qr:proxy` for the proxy, in a second terminal. The dev proxy forwards to
+`http://localhost:8787`, so if the proxy is not running the app's QR calls fail with
+`ECONNREFUSED` (error text comes from Vite's proxy, not from the app). For a deployment where the app
+and the proxy are on different origins, set `VITE_QR_PROXY_URL` and list the app's origin in
+`QR_ALLOWED_ORIGINS`; otherwise put the proxy behind the same host (for example a reverse proxy on
+`/api/qr`) and leave `VITE_QR_PROXY_URL` unset.
 
 Copy-pasteable production recipes — nginx and Caddy snippets, a `server/Dockerfile` +
 `docker-compose.yml`, a systemd unit, and a deployment checklist — are in

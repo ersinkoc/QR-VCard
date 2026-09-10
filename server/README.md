@@ -18,9 +18,10 @@ Configuration (environment only — the proxy never reads a config file):
 | `QR_ALLOWED_ORIGINS` | no | `http://localhost:5173` | comma-separated browser origins allowed to call the proxy; `*` for any |
 
 Keep `QR_API_KEY` out of the repository: put it in the root `.env` (git-ignored, and what
-`npm run qr:proxy` loads via `--env-file`) or a `server/.env` (also ignored), an `EnvironmentFile`
-with mode `600`, or your platform's secret store. Never under a `VITE_*` name — Vite inlines those
-into the client bundle.
+`npm run qr:proxy` loads via `--env-file`), in the unit's `EnvironmentFile`/compose env, or in your
+platform's secret store. Never under a `VITE_*` name — Vite inlines those into the client bundle.
+(There is no `server/.env` in the run path: the proxy reads process environment only, so a key placed
+there would be silently ignored.)
 
 Check any deployment with:
 
@@ -97,7 +98,8 @@ docker run -d --name qr-proxy --restart unless-stopped \
   qr-proxy
 ```
 
-`server/docker-compose.yml` wraps that, including a health check and a fail-fast key check:
+`server/docker-compose.yml` wraps that — the health check comes from the image's `HEALTHCHECK`, which
+compose reports as `Up (healthy)` — and adds a fail-fast key check:
 
 ```bash
 # QR_API_KEY (and optionally QR_API_URL / QR_ALLOWED_ORIGINS) from the root .env
