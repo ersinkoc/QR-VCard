@@ -50,6 +50,8 @@ data. It prefers a static admin token and falls back to logging in with `DIRECTU
 | Script | What it does |
 |---|---|
 | `npm run dev` | Vite dev server |
+| `npm run dev:all` | Vite dev server **and** the QR proxy together (one command, Ctrl+C stops both) |
+| `npm run qr:proxy` | The QR proxy alone — needed for QR generation in dev |
 | `npm run build` | `tsc --noEmit` + production build (`dist/`) |
 | `npm run preview` | Serve the production build |
 | `npm test` | Vitest unit tests (`vcf.ts`, `short-code.ts`) |
@@ -104,9 +106,10 @@ upstream status per request and never logs the key. Available endpoints: `POST /
 `OPTIONS /api/qr` (CORS preflight) and `GET /healthz` (reports whether a key is configured).
 
 In development the Vite dev server proxies `/api/qr` (see `vite.config.ts`), so the browser makes a
-same-origin request and no CORS is involved. **Run both processes**: `npm run dev` for the app and
-`npm run qr:proxy` for the proxy, in a second terminal. The dev proxy forwards to
-`http://localhost:8787`, so if the proxy is not running the app's QR calls fail with
+same-origin request and no CORS is involved. **Start both with one command**: `npm run dev:all` runs
+the app and the proxy together (prefixed output, Ctrl+C stops both). `npm run dev` and
+`npm run qr:proxy` in two terminals remain the alternative when you want separate logs. The dev proxy
+forwards to `http://localhost:8787`, so if the proxy is not running the app's QR calls fail with
 `ECONNREFUSED` (error text comes from Vite's proxy, not from the app). For a deployment where the app
 and the proxy are on different origins, set `VITE_QR_PROXY_URL` and list the app's origin in
 `QR_ALLOWED_ORIGINS`; otherwise put the proxy behind the same host (for example a reverse proxy on
