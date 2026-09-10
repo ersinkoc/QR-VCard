@@ -54,6 +54,7 @@ data. It prefers a static admin token and falls back to logging in with `DIRECTU
 | `npm test` | Vitest unit tests (`vcf.ts`, `short-code.ts`) |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run icons` | Regenerate `public/pwa-*.png` (dependency-free PNG writer) |
+| `npm run qr:verify` | Probe the QR API (`POST /QR/create`) and report status, content type and body shape |
 | `npm run directus:up` / `:down` | Start / stop the local Directus container |
 | `npm run directus:logs` | Tail the Directus container logs |
 | `npm run directus:bootstrap` | Provision collection, policies, roles, users, seed |
