@@ -96,6 +96,14 @@ base64, or a URL) has never been observed. `parseQrResponse()` throws with the o
 instead of guessing, and `qrUrl()` keeps its async “resolve to an `<img>`-usable src” contract, so
 wiring the real parsing later touches one function and no consumers.
 
+**The browser path is blocked by CORS, independently of the 500.** A preflight `OPTIONS` to
+`/QR/create` returns `204` with `Access-Control-Allow-Origin: *` but **no**
+`Access-Control-Allow-Methods` and **no** `Access-Control-Allow-Headers`. Because the request
+carries the non-simple `ApiKey` header, a browser requires both of those to list/cover `POST` and
+`apikey` — without them the preflight fails and the real POST is never sent. The actual `POST`
+response currently carries no `Access-Control-Allow-Origin` either, which a browser needs in order
+to let the caller read the result. Both are provider-side fixes.
+
 Re-check the endpoint with:
 
 ```bash
@@ -140,7 +148,7 @@ public deployment without a license or another enforcement point.
 src/
   lib/directus.ts     infrastructure adapter — the ONLY place that talks to Directus
   lib/vcf.ts          pure vCard 3.0 builder + .vcf download
-  lib/qr.ts           QR adapter seam: external API (env) or local qrcode generation
+  lib/qr.ts           QR adapter seam: POST /QR/create on the external QR API
   lib/short-code.ts   unambiguous short codes (no 0/O/1/l/I)
   pages/              HomePage, ScanPage (/c/:code), PanelPage (login + CRUD + QR)
   components/         QrDisplay, CopyButton, ContactActions, VCardForm

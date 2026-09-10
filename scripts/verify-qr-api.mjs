@@ -16,6 +16,9 @@
  *                          Swagger's documented "ApiKey <key>" form is rejected
  *                          with 401; only the bare key authenticates.
  *   QR_API_URL   optional  API base URL; default https://artqrcode.oxog.net
+ *   QR_ORIGIN    optional  Origin the app is served from; default
+ *                          http://localhost:5173 (the Vite dev server). Used by
+ *                          the CORS preflight probe.
  *   QR_SAMPLE    optional  Text to encode; default is a sample short link.
  *
  * SECURITY: do not rename the key to a VITE_* variable. Vite inlines VITE_*
@@ -43,6 +46,7 @@ Object.assign(env, process.env);
 
 const BASE = (env.QR_API_URL || 'https://artqrcode.oxog.net').replace(/\/+$/, '');
 const SAMPLE = env.QR_SAMPLE || 'https://qr-vcard.local/c/abc123';
+const ORIGIN = env.QR_ORIGIN || 'http://localhost:5173';
 const key = env.QR_API_KEY || env.VITE_QR_API_KEY || '';
 
 let failures = 0;
@@ -92,6 +96,46 @@ async function post(label, body, { withKey = true } = {}) {
   return { status: res.status, shape };
 }
 
+/**
+ * Browser preflight probe.
+ *
+ * The app sends a non-simple header (`ApiKey`), so a real browser first issues
+ * an OPTIONS request and only sends the POST if the answer carries matching
+ * Access-Control-Allow-* headers. Node's fetch does not enforce CORS — it sends
+ * both requests regardless — which is what makes it useful here: we read the
+ * headers the browser itself will judge.
+ */
+async function preflight() {
+  const res = await fetch(`${BASE}/QR/create`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: ORIGIN,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'apikey',
+    },
+  });
+  await res.arrayBuffer();
+
+  const allowOrigin = res.headers.get('access-control-allow-origin');
+  const allowMethods = res.headers.get('access-control-allow-methods');
+  const allowHeaders = res.headers.get('access-control-allow-headers');
+
+  console.log(`      status=${res.status}`);
+  console.log(`      access-control-allow-origin:  ${allowOrigin ?? '(absent)'}`);
+  console.log(`      access-control-allow-methods: ${allowMethods ?? '(absent)'}`);
+  console.log(`      access-control-allow-headers: ${allowHeaders ?? '(absent)'}`);
+  console.log(`      access-control-max-age:       ${res.headers.get('access-control-max-age') ?? '(absent)'}`);
+
+  return { status: res.status, allowOrigin, allowMethods, allowHeaders };
+}
+
+/** Does a comma-separated header value (or "*") cover `want`, case-insensitively? */
+function allows(list, want) {
+  if (!list) return false;
+  const values = list.split(',').map((v) => v.trim().toLowerCase());
+  return values.includes('*') || values.includes(want.toLowerCase());
+}
+
 const colors = { first: '000000', second: 'ff0000', third: '555555', fourth: '888888', background: 'ffffff', useRandomColors: false };
 const eyes = { eyeFrameType: 'Square', eyeBallType: 'Circle' };
 const gradient = { linearGradient: false, radialGradient: false, eyeGradient: false, gradientColorFirstHex: 'ff0000', gradientColorSecondHex: '000000' };
@@ -122,6 +166,30 @@ async function main() {
   await control.arrayBuffer(); // drain, so the socket closes before we exit
   check('control: request without a key is rejected (401)', control.status === 401, `got ${control.status}`);
 
+  console.log('\n-- probe: CORS preflight (browser path) --');
+  const pf = await preflight();
+  check('preflight OPTIONS returns 2xx', pf.status >= 200 && pf.status < 300, `got ${pf.status}`);
+  check(
+    `Access-Control-Allow-Origin allows ${ORIGIN}`,
+    pf.allowOrigin === '*' || pf.allowOrigin === ORIGIN,
+    `got ${pf.allowOrigin ?? '(absent)'}`,
+  );
+  check('Access-Control-Allow-Methods allows POST', allows(pf.allowMethods, 'POST'), `got ${pf.allowMethods ?? '(absent)'}`);
+  check('Access-Control-Allow-Headers allows apikey', allows(pf.allowHeaders, 'apikey'), `got ${pf.allowHeaders ?? '(absent)'}`);
+
+  // Informational: the browser needs the origin allowed on the ACTUAL response
+  // too, not only on the preflight. Not a check, because a provider 500 (empty,
+  // header-less) would make it fail for a reason that is not about CORS.
+  const withOrigin = await fetch(`${BASE}/QR/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ApiKey: key, Origin: ORIGIN },
+    body: JSON.stringify({ inputText: SAMPLE }),
+  });
+  await withOrigin.arrayBuffer();
+  console.log(
+    `      actual POST with Origin: status=${withOrigin.status} access-control-allow-origin=${withOrigin.headers.get('access-control-allow-origin') ?? '(absent)'}`,
+  );
+
   console.log('\n-- probe: minimal body --');
   const minimal = await post('minimal', { inputText: SAMPLE });
   check('minimal body returns 200', minimal.status === 200, `got ${minimal.status} (${minimal.shape})`);
@@ -144,7 +212,11 @@ async function main() {
 
 main()
   .then(() => {
-    console.log(failures === 0 ? '\nALL PROBES PASSED — wire the reported shape into src/lib/qr.ts.' : `\n${failures} CHECK(S) FAILED`);
+    console.log(
+      failures === 0
+        ? '\nALL CHECKS PASSED — CORS allows the browser path and /QR/create returned 200; implement parseQrResponse() from the shape above.'
+        : `\n${failures} CHECK(S) FAILED`,
+    );
     // Set the code instead of calling process.exit(): exiting while a fetch
     // socket is still tearing down trips a libuv assertion on Windows.
     process.exitCode = failures === 0 ? 0 : 1;
