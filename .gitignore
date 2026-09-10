@@ -20,3 +20,4 @@ directus/.bootstrap-state.json
 !/.wrongstack/project.json
 
 .dfmt/
+.claude/settings.json
