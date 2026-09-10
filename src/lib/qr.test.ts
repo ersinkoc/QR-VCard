@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { qrRequest, qrUrl, requestQr } from './qr';
+import { downloadQr, qrRequest, qrUrl, requestQr } from './qr';
 
 // 1x1 PNG — stands in for the provider's raw image bytes.
 const PNG = Buffer.from(
@@ -152,5 +152,36 @@ describe('qrUrl against a stub proxy (real HTTP, fake provider)', () => {
   it('rejects a 200 that is not an image, and says what it got', async () => {
     reply = { status: 200, contentType: 'application/json', body: Buffer.from('{"url":"https://cdn.example/qr.png"}') };
     await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/expected raw image bytes/);
+  });
+
+  it('downloads straight from the blob URL without minting a second one', async () => {
+    reply = { status: 200, contentType: 'image/png', body: PNG };
+
+    const anchors: { href: string; download: string; clicked: boolean }[] = [];
+    vi.stubGlobal('document', {
+      createElement: () => {
+        const a = {
+          href: '',
+          download: '',
+          clicked: false,
+          click() {
+            this.clicked = true;
+          },
+        };
+        anchors.push(a);
+        return a;
+      },
+    });
+    const created = vi.spyOn(URL, 'createObjectURL');
+
+    await downloadQr('https://host/c/abc', 'qr-abc.png');
+
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0].href.startsWith('blob:')).toBe(true);
+    expect(anchors[0].download).toBe('qr-abc.png');
+    expect(anchors[0].clicked).toBe(true);
+    // Regression lock: the old implementation fetched the blob URL and wrapped
+    // it in a SECOND object URL, which retained the PNG for the page's life.
+    expect(created).toHaveBeenCalledTimes(1);
   });
 });

@@ -144,6 +144,32 @@ It asserts the complete body returns a `200` image, reports the minimal body as 
 provider's `500` on partial bodies is the root cause of that failure mode), and prints the
 provider's CORS headers as information.
 
+## Roles and card ownership
+
+Three roles exist (provisioned by `directus/bootstrap.mjs`):
+
+| Role | Sees | Manages |
+|---|---|---|
+| `Administrator` | every card | every card, plus users |
+| `vcard-editor` | every card | every card |
+| `vcard-user` | only their own cards | only their own cards |
+
+Admins get a **Users** section in the panel (`/panel`): list accounts, create one with an initial
+password and a role, and set a new password for an existing account. Each person then signs in at
+`/panel` with their own credentials and sees only their own cards.
+
+**Enforcement is app-side, and that is a real limitation.** Ownership is checked in two places:
+`listCards()` filters by `user_created`, and `updateCard()` / `deleteCard()` refuse any card the
+signed-in user does not own (`src/lib/ownership.ts`). Directus itself can only enforce this
+server-side with **row-level permission rules, which are license-gated**: an unlicensed instance
+answers `RESOURCE_RESTRICTED: custom_permission_rules_enabled`, so `directus/bootstrap.mjs` skips
+them and `directus/verify.mjs` reports the affected checks as `SKIP`.
+
+Consequence: someone who calls the Directus API directly with their own token — bypassing this UI —
+can still read the whole `vcards` collection. For real isolation either run a licensed Directus
+(the rules then apply and the SKIPped checks become meaningful), or put card access behind a
+server-side API that authenticates the caller and filters on their behalf.
+
 ## Directus 12 notes (important)
 
 This project targets Directus 12, whose API differs from older versions in ways that are easy

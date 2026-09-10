@@ -8,6 +8,9 @@ import {
   rest,
   updateItem,
 } from '@directus/sdk';
+import { canManage, isPrivileged } from './ownership';
+
+export { isPrivileged } from './ownership';
 
 export interface VCard {
   id: string;
@@ -24,11 +27,22 @@ export interface VCard {
   note: string | null;
   accent_color: string | null;
   date_created: string | null;
+  /** Owner. Set by Directus on create; the basis of the ownership checks. */
+  user_created: string | null;
 }
 
 export interface MeInfo {
   id: string;
   email: string;
+  role_name: string;
+}
+
+export interface PanelUser {
+  id: string;
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  status: string;
   role_name: string;
 }
 
@@ -62,11 +76,11 @@ export async function fetchMe(): Promise<MeInfo> {
   return { id: me.id, email: me.email, role_name: me.role?.name ?? '' };
 }
 
-/** Privileged roles see everyone's cards; the plain user role only their own. */
-export function isPrivileged(me: MeInfo): boolean {
-  return me.role_name === 'Administrator' || me.role_name === 'vcard-editor';
-}
-
+/**
+ * Lists the cards this actor may see. The API filter is a convenience, not a
+ * guarantee: on an unlicensed Directus (no row-level rules) a user's token can
+ * still read the collection directly. See README, "Roles and card ownership".
+ */
 export async function listCards(me: MeInfo): Promise<VCard[]> {
   const filter = isPrivileged(me) ? undefined : { user_created: { _eq: me.id } };
   const rows = (await directus.request(
@@ -79,12 +93,22 @@ export async function createCard(input: Partial<VCard> & { code: string }): Prom
   return directus.request(createItem('vcards', input)) as Promise<VCard>;
 }
 
-export async function updateCard(id: string, patch: Partial<VCard>): Promise<VCard> {
-  return directus.request(updateItem('vcards', id, patch)) as Promise<VCard>;
+function assertCanManage(card: VCard, me: MeInfo): void {
+  if (!canManage(card, me)) {
+    throw new Error('You can only manage your own cards.');
+  }
 }
 
-export async function deleteCard(id: string): Promise<void> {
-  await directus.request(deleteItem('vcards', id));
+/** Refuses unless `me` owns the card (or is privileged). */
+export async function updateCard(me: MeInfo, card: VCard, patch: Partial<VCard>): Promise<VCard> {
+  assertCanManage(card, me);
+  return directus.request(updateItem('vcards', card.id, patch)) as Promise<VCard>;
+}
+
+/** Refuses unless `me` owns the card (or is privileged). */
+export async function deleteCard(me: MeInfo, card: VCard): Promise<void> {
+  assertCanManage(card, me);
+  await directus.request(deleteItem('vcards', card.id));
 }
 
 /** Public, unauthenticated read of one published card by its short code. */
@@ -96,6 +120,62 @@ export async function fetchPublishedByCode(code: string): Promise<VCard | null> 
     }),
   )) as VCard[];
   return rows[0] ?? null;
+}
+
+// --- user administration (requires the Administrator role in Directus) -------
+
+export async function listPanelUsers(): Promise<PanelUser[]> {
+  const rows = (await directus.request(
+    readItems('directus_users', {
+      fields: ['id', 'email', 'first_name', 'last_name', 'status', { role: ['name'] }],
+      sort: ['email'],
+      limit: 200,
+    }),
+  )) as {
+    id: string;
+    email: string;
+    first_name: string | null;
+    last_name: string | null;
+    status: string;
+    role: { name: string } | null;
+  }[];
+  return rows.map((u) => ({
+    id: u.id,
+    email: u.email,
+    first_name: u.first_name,
+    last_name: u.last_name,
+    status: u.status,
+    role_name: u.role?.name ?? '(no role)',
+  }));
+}
+
+/** Roles a new panel user can be given — never Administrator. */
+export async function listAssignableRoles(): Promise<{ id: string; name: string }[]> {
+  const rows = (await directus.request(
+    readItems('directus_roles', { fields: ['id', 'name'], limit: 100 }),
+  )) as { id: string; name: string }[];
+  return rows.filter((role) => role.name !== 'Administrator');
+}
+
+export async function createPanelUser(input: {
+  email: string;
+  password: string;
+  first_name: string;
+  roleId: string;
+}): Promise<void> {
+  await directus.request(
+    createItem('directus_users', {
+      email: input.email,
+      password: input.password,
+      first_name: input.first_name,
+      role: input.roleId,
+      status: 'active',
+    }),
+  );
+}
+
+export async function setPanelUserPassword(id: string, password: string): Promise<void> {
+  await directus.request(updateItem('directus_users', id, { password }));
 }
 
 export function shortUrl(code: string): string {

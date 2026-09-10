@@ -195,13 +195,11 @@ export async function qrUrl(data: string): Promise<string> {
 export async function downloadQr(data: string, filename: string): Promise<void> {
   const src = await qrUrl(data);
   const a = document.createElement('a');
-  if (src.startsWith('data:')) {
-    a.href = src;
-  } else {
-    const blob = await (await fetch(src)).blob();
-    a.href = URL.createObjectURL(blob);
-  }
+  // Both `blob:` and `data:` URLs work as an href with the download attribute,
+  // so point at it directly: re-fetching and re-wrapping in a second object URL
+  // would retain the PNG bytes in the blob store for the page's lifetime.
+  a.href = src;
   a.download = filename;
   a.click();
-  if (a.href.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  if (src.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(src), 1000);
 }

@@ -3,8 +3,21 @@ import type { FormEvent } from 'react';
 import CopyButton from '../components/CopyButton';
 import QrDisplay from '../components/QrDisplay';
 import VCardForm from '../components/VCardForm';
-import type { MeInfo, VCard } from '../lib/directus';
-import { deleteCard, fetchMe, isPrivileged, listCards, login, logout, shortUrl, updateCard } from '../lib/directus';
+import type { MeInfo, PanelUser, VCard } from '../lib/directus';
+import {
+  createPanelUser,
+  deleteCard,
+  fetchMe,
+  listAssignableRoles,
+  listCards,
+  listPanelUsers,
+  login,
+  logout,
+  setPanelUserPassword,
+  shortUrl,
+  updateCard,
+} from '../lib/directus';
+import { isPrivileged } from '../lib/ownership';
 import { downloadQr } from '../lib/qr';
 
 function LoginForm({ onLoggedIn }: { onLoggedIn: () => void }) {
@@ -55,9 +68,9 @@ function QrModal({ card, onClose }: { card: VCard; onClose: () => void }) {
   const url = shortUrl(card.code);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  // qrUrl() rejects when the API is unconfigured, unreachable, or blocked by
-  // CORS; without this the button would fail silently and leave an unhandled
-  // rejection behind.
+  // qrUrl() rejects when the proxy is unconfigured, unreachable, or returns a
+  // non-image; without this the button would fail silently and leave an
+  // unhandled rejection behind.
   async function onDownload() {
     setDownloadError(null);
     try {
@@ -85,6 +98,176 @@ function QrModal({ card, onClose }: { card: VCard; onClose: () => void }) {
         {downloadError && <p className="mt-3 text-center text-sm text-red-600">{downloadError}</p>}
       </div>
     </div>
+  );
+}
+
+/**
+ * User administration. Rendered for privileged roles only, and the Directus
+ * permissions behind these calls are themselves Administrator-only, so a
+ * non-admin who reaches this UI still cannot create users.
+ */
+function UsersPanel() {
+  const [users, setUsers] = useState<PanelUser[] | null>(null);
+  const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
+  const [email, setEmail] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [password, setPassword] = useState('');
+  const [roleId, setRoleId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [resetFor, setResetFor] = useState<string | null>(null);
+  const [resetPassword, setResetPassword] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const [list, assignable] = await Promise.all([listPanelUsers(), listAssignableRoles()]);
+      setUsers(list);
+      setRoles(assignable);
+      setRoleId((current) => current || assignable.find((r) => r.name === 'vcard-user')?.id || assignable[0]?.id || '');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function onCreate(ev: FormEvent) {
+    ev.preventDefault();
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await createPanelUser({ email: email.trim(), password, first_name: firstName.trim(), roleId });
+      setEmail('');
+      setFirstName('');
+      setPassword('');
+      setNotice('User created. They can sign in with the password you set.');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSetPassword(userId: string) {
+    setError(null);
+    setNotice(null);
+    try {
+      await setPanelUserPassword(userId, resetPassword);
+      setResetFor(null);
+      setResetPassword('');
+      setNotice('Password updated.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <section className="card mt-8 p-5">
+      <h2 className="text-lg font-semibold tracking-tight">Users</h2>
+      <p className="mt-1 text-sm text-muted">
+        Create an account per person. Each one signs in with their own password and manages only their own cards.
+      </p>
+
+      {users === null ? (
+        <p className="mt-4 text-muted">Loading users…</p>
+      ) : (
+        <ul className="mt-4 divide-y divide-[var(--color-line)]">
+          {users.map((u) => (
+            <li key={u.id} className="flex flex-wrap items-center gap-3 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium tracking-tight">{u.email}</p>
+                <p className="text-sm text-muted">
+                  {[u.first_name, u.last_name].filter(Boolean).join(' ') || '—'} · {u.role_name} · {u.status}
+                </p>
+              </div>
+              {resetFor === u.id ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    className="input w-48"
+                    type="password"
+                    placeholder="New password"
+                    value={resetPassword}
+                    onChange={(e) => setResetPassword(e.target.value)}
+                    autoComplete="new-password"
+                  />
+                  <button type="button" className="btn btn-primary" disabled={resetPassword.length < 8} onClick={() => void onSetPassword(u.id)}>
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setResetFor(null);
+                      setResetPassword('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button type="button" className="btn btn-secondary" onClick={() => setResetFor(u.id)}>
+                  Set password
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form className="mt-6 border-t border-line pt-5" onSubmit={onCreate}>
+        <h3 className="font-medium tracking-tight">New user</h3>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <div>
+            <label className="label" htmlFor="new-user-email">
+              Email
+            </label>
+            <input id="new-user-email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </div>
+          <div>
+            <label className="label" htmlFor="new-user-name">
+              First name
+            </label>
+            <input id="new-user-name" className="input" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+          </div>
+          <div>
+            <label className="label" htmlFor="new-user-role">
+              Role
+            </label>
+            <select id="new-user-role" className="input" value={roleId} onChange={(e) => setRoleId(e.target.value)} required>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <label className="label mt-3" htmlFor="new-user-password">
+          Initial password (at least 8 characters)
+        </label>
+        <input
+          id="new-user-password"
+          className="input"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
+          minLength={8}
+          required
+        />
+        <button type="submit" className="btn btn-primary mt-3" disabled={busy || password.length < 8 || !roleId}>
+          {busy ? 'Creating…' : 'Create user'}
+        </button>
+      </form>
+
+      {notice && <p className="mt-3 text-sm text-muted">{notice}</p>}
+      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+    </section>
   );
 }
 
@@ -123,6 +306,17 @@ export default function PanelPage() {
   useEffect(() => {
     void loadCards();
   }, [loadCards]);
+
+  /** Every card mutation goes through the ownership guard in the adapter. */
+  async function mutate(action: () => Promise<unknown>) {
+    setError(null);
+    try {
+      await action();
+      await loadCards();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   if (authState === 'checking') {
     return <main className="flex min-h-dvh items-center justify-center bg-bg px-4"><p className="text-muted">Checking session…</p></main>;
@@ -172,6 +366,7 @@ export default function PanelPage() {
         {editing && (
           <div className="mt-6">
             <VCardForm
+              me={me}
               initial={editing === 'new' ? null : editing}
               onCancel={() => setEditing(null)}
               onSaved={() => {
@@ -212,10 +407,7 @@ export default function PanelPage() {
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={async () => {
-                        await updateCard(card.id, { status: card.status === 'published' ? 'draft' : 'published' });
-                        void loadCards();
-                      }}
+                      onClick={() => void mutate(() => updateCard(me, card, { status: card.status === 'published' ? 'draft' : 'published' }))}
                     >
                       {card.status === 'published' ? 'Unpublish' : 'Publish'}
                     </button>
@@ -225,10 +417,9 @@ export default function PanelPage() {
                     <button
                       type="button"
                       className="btn btn-ghost text-red-600"
-                      onClick={async () => {
+                      onClick={() => {
                         if (!window.confirm(`Delete card “${name}”?`)) return;
-                        await deleteCard(card.id);
-                        void loadCards();
+                        void mutate(() => deleteCard(me, card));
                       }}
                     >
                       Delete
@@ -239,6 +430,8 @@ export default function PanelPage() {
             </ul>
           )}
         </div>
+
+        {isPrivileged(me) && <UsersPanel />}
       </div>
 
       {qrCard && <QrModal card={qrCard} onClose={() => setQrCard(null)} />}

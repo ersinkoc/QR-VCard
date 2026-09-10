@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import type { VCard } from '../lib/directus';
+import type { MeInfo, VCard } from '../lib/directus';
 import { createCard, updateCard } from '../lib/directus';
 import { generateCode } from '../lib/short-code';
 
 const ACCENTS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#db2777'];
 
 interface Props {
+  me: MeInfo; // the signed-in actor; the adapter checks card ownership against it
   initial: VCard | null; // null = create
   onCancel: () => void;
   onSaved: (card: VCard) => void;
@@ -25,7 +26,7 @@ const FIELDS: { key: FieldKey; label: string; placeholder: string; half?: boolea
   { key: 'note', label: 'Note', placeholder: 'Anything you want visitors to read' },
 ];
 
-export default function VCardForm({ initial, onCancel, onSaved }: Props) {
+export default function VCardForm({ me, initial, onCancel, onSaved }: Props) {
   const [values, setValues] = useState<Record<FieldKey, string>>(() =>
     Object.fromEntries(FIELDS.map(({ key }) => [key, (initial?.[key] as string | null) ?? ''])) as Record<FieldKey, string>,
   );
@@ -43,7 +44,7 @@ export default function VCardForm({ initial, onCancel, onSaved }: Props) {
     try {
       const payload: Partial<VCard> = { ...values, accent_color: accent, status };
       const saved = initial
-        ? await updateCard(initial.id, payload)
+        ? await updateCard(me, initial, payload)
         : await createCard({ ...payload, code: generateCode() });
       onSaved(saved);
     } catch (e) {
