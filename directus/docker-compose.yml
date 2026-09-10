@@ -1,0 +1,20 @@
+services:
+  directus:
+    image: directus/directus:latest
+    container_name: qr-vcard-directus
+    ports:
+      - "8055:8055"
+    volumes:
+      - directus_database:/directus/database
+      - directus_uploads:/directus/uploads
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail http://localhost:8055/server/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  directus_database:
+  directus_uploads:

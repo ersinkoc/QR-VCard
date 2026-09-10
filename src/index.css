@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+@theme {
+  /* Minimal Clarity kit tokens (OKLCH) */
+  --color-bg: oklch(99% 0 0);
+  --color-surface: oklch(98% 0.002 260);
+  --color-fg: oklch(20% 0.02 260);
+  --color-muted: oklch(55% 0.02 260);
+  --color-accent: oklch(58% 0.16 264);
+  --color-accent-contrast: oklch(99% 0 0);
+  --color-line: oklch(92% 0.004 260);
+
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.665rem;
+
+  --font-sans: Inter, Geist, system-ui, sans-serif;
+  --font-mono: Geist Mono, ui-monospace, monospace;
+
+  --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: oklch(18% 0.01 260);
+    --color-surface: oklch(22% 0.012 260);
+    --color-fg: oklch(95% 0.01 260);
+    --color-muted: oklch(68% 0.02 260);
+    --color-accent: oklch(68% 0.15 264);
+    --color-accent-contrast: oklch(18% 0.01 260);
+    --color-line: oklch(30% 0.012 260);
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: light dark;
+  }
+  body {
+    @apply bg-bg font-sans text-fg leading-normal antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-card;
+  }
+  .btn {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium tracking-tight transition-all duration-150 select-none;
+  }
+  .btn:active {
+    translate: 0 1px;
+  }
+  .btn-primary {
+    @apply bg-accent text-accent-contrast hover:brightness-110 disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply bg-surface text-fg border border-line hover:bg-fg/8;
+  }
+  .btn-ghost {
+    @apply text-fg hover:bg-fg/5;
+  }
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg outline-none focus:ring-2 focus:ring-accent/40;
+  }
+  .label {
+    @apply mb-1 block text-sm font-medium text-fg;
+  }
+  .code {
+    @apply font-mono text-sm;
+  }
+}

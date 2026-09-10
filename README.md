@@ -1,0 +1,131 @@
+# QR-VCard
+
+Digital business cards: create a vCard in a small panel, publish it, and share it as a QR code
+that resolves to a short URL. Opening that URL shows the card and lets the visitor add it to
+their contacts (`.vcf` download).
+
+- **Frontend** — Vite + React 19 + TypeScript + Tailwind 4, installable PWA (offline shell, generated icons).
+- **Backend** — Directus (headless CMS) via its REST API, using `@directus/sdk`.
+- **QR codes** — pluggable: local generation today, your QR generation API later (see below).
+
+## Quick start (local, Docker)
+
+```bash
+npm install
+npm run directus:up        # starts Directus 12 on http://localhost:8055 (Docker, SQLite volume)
+npm run directus:setup     # one-time provisioning: collection, policies, roles, users, seed card
+npm run directus:verify    # end-to-end API smoke test against the running instance
+npm run dev                # app on http://localhost:5173
+```
+
+The panel lives at `/panel`, the public scan target at `/c/<code>` (the seed card is `/c/demo-01`).
+
+Local credentials are written to `directus/.env` on first run:
+
+| Purpose | Email | Password |
+|---|---|---|
+| Directus admin | `admin@local.dev` | `vcard-admin` |
+| Panel / editor | `editor@local.dev` | `vcard-editor` |
+| Regular user | `ada@local.dev` | `vcard-user` |
+
+## Connecting to a remote Directus instead
+
+`npm run directus:up` is only for local development. To point the project at an existing
+instance, set `VITE_DIRECTUS_URL` in `.env` and provision against it:
+
+```bash
+DIRECTUS_URL=https://directus.example.com \
+DIRECTUS_ADMIN_TOKEN=<static-admin-token> \
+npm run directus:bootstrap
+```
+
+`directus/bootstrap.mjs` is idempotent — re-running it repairs drift instead of duplicating
+data. It prefers a static admin token and falls back to logging in with `DIRECTUS_URL` +
+`ADMIN_EMAIL` / `ADMIN_PASSWORD` (it ignores the placeholder token shipped in `directus/.env.example`).
+
+## Scripts
+
+| Script | What it does |
+|---|---|
+| `npm run dev` | Vite dev server |
+| `npm run build` | `tsc --noEmit` + production build (`dist/`) |
+| `npm run preview` | Serve the production build |
+| `npm test` | Vitest unit tests (`vcf.ts`, `short-code.ts`) |
+| `npm run typecheck` | TypeScript, no emit |
+| `npm run icons` | Regenerate `public/pwa-*.png` (dependency-free PNG writer) |
+| `npm run directus:up` / `:down` | Start / stop the local Directus container |
+| `npm run directus:logs` | Tail the Directus container logs |
+| `npm run directus:bootstrap` | Provision collection, policies, roles, users, seed |
+| `npm run directus:verify` | End-to-end API smoke test |
+
+## Environment variables
+
+App (`/.env`):
+
+- `VITE_DIRECTUS_URL` — Directus base URL (default `http://localhost:8055`).
+- `VITE_QR_API_URL` — optional QR service. The literal `{data}` is replaced with the
+  URL-encoded target link, e.g. `https://qr.example.com/api?text={data}`; without a `{data}`
+  placeholder the link is appended as `data=<encoded>`. When unset, QR images are generated
+  locally with the `qrcode` package (lazily imported, so it stays out of the main bundle).
+
+Directus container (`directus/.env`, created from `directus/.env.example`):
+
+- `KEY`, `SECRET` — Directus session secrets (regenerated if the file is missing).
+- `ADMIN_EMAIL`, `ADMIN_PASSWORD` — first-run admin account.
+- `DIRECTUS_ADMIN_TOKEN` — optional static admin token for scripted provisioning.
+- `EDITOR_*`, `USER_*`, `SEED_CODE` — panel credentials and the demo card code.
+
+## Directus 12 notes (important)
+
+This project targets Directus 12, whose API differs from older versions in ways that are easy
+to trip over — `directus/bootstrap.mjs` encodes all of them:
+
+1. **Login returns `access_token`**, not `token`.
+2. **Roles cannot be created with a non-empty `policies` array** (403). Create the role bare,
+   then link the policy with the staged m2m form: `PATCH /roles/<id> { policies: { create: [{ policy }] } }`.
+3. **The anonymous policy is stored as `$t:public_label`** on a fresh install. Matching only on
+   the literal name `Public` creates a second, unused policy and public reads then 403.
+4. **Row-level permission rules and explicit field lists are license-gated**
+   (`RESOURCE_RESTRICTED: custom_permission_rules_enabled`). On an unlicensed instance the only
+   accepted permission shape is `fields: ['*']` with `permissions: null`. Bootstrap detects this,
+   degrades gracefully, warns, and records the capability in `directus/.bootstrap-state.json`;
+   `verify` then reports the affected checks as `SKIP` rather than false failures.
+5. **Permission changes are cached** — bootstrap clears the cache so an immediately following
+   verify run does not read stale ACLs.
+6. **A `uuid` primary key needs `special: ['uuid']`** on its field, otherwise inserts fail with
+   `Validation failed for field "id"`.
+
+### What this means for access control
+
+With a Directus license, `vcard-user` gets API-enforced isolation (a user only sees and edits
+their own cards). Without one, those row rules cannot be created locally, so isolation rests on
+the app: `listCards()` filters on `user_created`, and the public scan page only queries
+`status = published`. Treat the unlicensed setup as **development-only** — do not run it as a
+public deployment without a license or another enforcement point.
+
+## Architecture
+
+```
+src/
+  lib/directus.ts     infrastructure adapter — the ONLY place that talks to Directus
+  lib/vcf.ts          pure vCard 3.0 builder + .vcf download
+  lib/qr.ts           QR adapter seam: external API (env) or local qrcode generation
+  lib/short-code.ts   unambiguous short codes (no 0/O/1/l/I)
+  pages/              HomePage, ScanPage (/c/:code), PanelPage (login + CRUD + QR)
+  components/         QrDisplay, CopyButton, ContactActions, VCardForm
+directus/
+  docker-compose.yml  local Directus 12 + SQLite volume
+  bootstrap.mjs       idempotent provisioning (collection, policies, roles, users, seed)
+  verify.mjs          end-to-end API smoke test
+scripts/make-icons.mjs  PWA icon generator (no image dependencies)
+```
+
+The app never imports vendor types outside `src/lib/directus.ts`, so swapping the backend means
+rewriting that one adapter. vCard 3.0 is used for maximum import compatibility across iOS,
+Android and Outlook.
+
+## Deployment (outline)
+
+Build with `npm run build` and serve `dist/` over HTTPS (a PWA needs a secure origin). The scan
+route `/c/:code` needs an SPA fallback to `index.html`. Set `VITE_DIRECTUS_URL` at build time and
+use a licensed Directus for production so the row-level rules in `bootstrap.mjs` apply.

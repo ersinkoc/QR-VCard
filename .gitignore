@@ -1,0 +1,15 @@
+node_modules/
+dist/
+dev-dist/
+.temp_files/
+
+# Directus (Docker volumes live in named volumes; local-only artifacts below)
+directus/.env
+directus/data.db
+directus/data.db*
+directus/.bootstrap-state.json
+
+.wrongstack/
+!/.wrongstack/
+/.wrongstack/*
+!/.wrongstack/project.json
