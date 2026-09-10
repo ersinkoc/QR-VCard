@@ -10,6 +10,10 @@
  *   npm run build          # produces dist/ (reads VITE_DIRECTUS_URL from .env)
  *   npm run start          # http://localhost:8080
  *
+ * Static answers carry baseline security headers (nosniff, same-origin framing,
+ * referrer policy, HSTS) and are gzipped when the client accepts gzip — platform
+ * proxies do not always compress, and QR landing pages are opened on phones.
+ *
  * Environment:
  *   PORT        optional  listen port, default 8080
  *   DIST_DIR    optional  directory to serve, default ./dist
@@ -23,6 +27,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { createQrHandler, qrConfigFromEnv } from './qr-handler.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -46,10 +51,32 @@ const MIME = {
   '.map': 'application/json; charset=utf-8',
 };
 
+/**
+ * Baseline hardening for every response this server writes itself (static files and
+ * JSON fallbacks; the QR handler manages its own headers and is covered by tests).
+ * nosniff stops MIME-sniffed script execution, SAMEORIGIN keeps the card pages out
+ * of third-party frames, strict-origin-when-cross-origin keeps short codes out of
+ * cross-site Referrers, and HSTS is ignored over plain http, so it is safe in dev.
+ */
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Strict-Transport-Security': 'max-age=31536000',
+};
+
+/** Extensions worth compressing; everything else (png/jpg/woff2) is already dense. */
+const COMPRESSIBLE = new Set(['.html', '.js', '.mjs', '.css', '.json', '.webmanifest', '.svg', '.txt', '.map']);
+
+function acceptsGzip(req) {
+  const enc = req.headers['accept-encoding'];
+  return typeof enc === 'string' && /\bgzip\b/i.test(enc);
+}
+
 const qr = createQrHandler(qrConfigFromEnv());
 
 function json(res, status, payload) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
   res.end(JSON.stringify(payload));
 }
 
@@ -63,12 +90,27 @@ function cacheControl(pathname) {
 }
 
 async function sendFile(req, res, filePath, pathname) {
-  const body = await readFile(filePath);
-  res.writeHead(200, {
-    'Content-Type': MIME[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
-    'Content-Length': body.length,
+  let body = await readFile(filePath);
+  const ext = extname(filePath).toLowerCase();
+  const headers = {
+    'Content-Type': MIME[ext] ?? 'application/octet-stream',
     'Cache-Control': cacheControl(pathname),
-  });
+    ...SECURITY_HEADERS,
+  };
+  // A compressible response exists in two encodings, so BOTH variants must carry
+  // Vary: Accept-Encoding — including the identity one. An immutable /assets/* URL
+  // cached by a shared proxy without the marker could hand a gzip body to a client
+  // that cannot decode it (or the fat bundle to one that could).
+  if (COMPRESSIBLE.has(ext)) headers['Vary'] = 'Accept-Encoding';
+  // Reverse proxies do not all compress, and the JS bundles are the bulk of a scan
+  // page's load on mobile data. Compress per request (dist is small; gzipSync of the
+  // largest bundle is single-digit milliseconds) rather than caching a second copy.
+  if (COMPRESSIBLE.has(ext) && acceptsGzip(req)) {
+    body = gzipSync(body);
+    headers['Content-Encoding'] = 'gzip';
+  }
+  headers['Content-Length'] = body.length;
+  res.writeHead(200, headers);
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 

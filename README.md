@@ -15,7 +15,7 @@ their contacts (`.vcf` download).
 ```bash
 npm install
 npm run directus:up        # starts Directus 12 on http://localhost:8055 (Docker, SQLite volume)
-npm run directus:setup     # one-time provisioning: collection, policies, roles, users, seed card
+npm run directus:bootstrap  # one-time provisioning: collection, policies, roles, users, seed card
 npm run directus:verify    # end-to-end API smoke test against the running instance
 npm run dev                # app on http://localhost:5173
 ```
@@ -59,9 +59,9 @@ data. It prefers a static admin token and falls back to logging in with `DIRECTU
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run icons` | Regenerate `public/pwa-*.png` (dependency-free PNG writer) |
 | `npm run scripts:check` | Syntax-check every `.mjs` in `scripts/`, `server/` and `directus/` (they are outside tsc and vitest) |
+| `npm run deploy:check` | Fail the built `dist/` if it embeds the dev-default Directus URL, a secret name, or a plain-http URL |
 | `npm run qr:verify` | Probe the QR API (`POST /QR/create`) and report status, content type and body shape |
 | `npm run directus:up` / `:down` | Start / stop the local Directus container |
-| `npm run directus:logs` | Tail the Directus container logs |
 | `npm run directus:bootstrap` | Provision collection, policies, roles, users, seed |
 | `npm run directus:verify` | End-to-end API smoke test |
 
@@ -78,8 +78,10 @@ App (`/.env`):
 Server-side variables, read by `npm run qr:proxy` (never sent to the browser):
 
 - `QR_API_URL` — provider base URL; default `https://artqrcode.oxog.net`.
-- `QR_API_KEY` — provider key, sent as the `ApiKey` header by the proxy.
-- `PORT` — proxy listen port; default `8787`.
+- `QR_API_KEY` — provider key, sent as the `ApiKey` header by the proxy (also required by
+  `npm run start`, the single-port server).
+- `PORT` — proxy listen port; default `8787` (`npm run start`: default `8080`, plus `DIST_DIR`
+  to serve another directory).
 - `QR_ALLOWED_ORIGINS` — comma-separated browser origins allowed to call the proxy; default
   `http://localhost:5173` (the Vite dev server). Use `*` to allow any.
 
@@ -262,12 +264,53 @@ The app never imports vendor types outside `src/lib/directus.ts`, so swapping th
 rewriting that one adapter. vCard 3.0 is used for maximum import compatibility across iOS,
 Android and Outlook.
 
-## Deployment (outline)
+## Deployment (Nixpacks → Docker image)
 
-Build with `npm run build` and serve `dist/` over HTTPS (a PWA needs a secure origin). The scan
-route `/c/:code` needs an SPA fallback to `index.html`. Set `VITE_DIRECTUS_URL` at build time and
-use a licensed Directus for production so the row-level rules in `bootstrap.mjs` apply. Directus
-must also allow the app's origin — the browser calls it directly, and the shipped
-`directus/.env.example` sets `CORS_ENABLED=true` with `CORS_ORIGIN=true` (any origin) for local
-development; for a public deployment set `CORS_ORIGIN` to the app's domain(s) instead (see the
-Directus docs, Security limits → CORS).
+`nixpacks.toml` is the build plan for Nixpacks-based platforms (Railway, Coolify, or a local
+`nixpacks build . --name qr-vcard`): install, `npm run build`, then start `server/serve.mjs` —
+one port serving `dist/`, `POST /api/qr` and `GET /healthz` (the root `Dockerfile` builds the
+same image by hand). No extra proxy rules are needed: `/c/:code`, `/panel` and the QR endpoint
+are all answered by that one process.
+
+**1. Provision the remote Directus once (admin token).** From any machine that can reach it:
+
+```bash
+DIRECTUS_URL=https://directus.example.com DIRECTUS_ADMIN_TOKEN=<token> npm run directus:bootstrap
+DIRECTUS_URL=https://directus.example.com DIRECTUS_ADMIN_TOKEN=<token> npm run directus:verify
+```
+
+Process env wins over `directus/.env`, so these are never silently overridden by leftover local
+values. The admin token exists only in ops env — the deployed app talks to Directus with
+per-user login tokens from the panel, never with the admin token. On the Directus side set
+`CORS_ORIGIN` to the app's domain: the browser calls Directus directly (the shipped
+`directus/.env.example` documents why `CORS_ORIGIN=true` is local-only).
+
+**2. Variables on the deploy platform.**
+
+| Variable | When | Why |
+|---|---|---|
+| `VITE_DIRECTUS_URL` | **build** | the public Directus URL, inlined by Vite — set it BEFORE the first build; changing it later triggers a rebuild with the new value |
+| `QR_API_KEY` | runtime | QR provider key, read by `server/serve.mjs` only, never shipped to the browser |
+| `PORT` | runtime | listen port; most platforms inject it (default `8080`) |
+
+Health check path is `/healthz`; the Node major is pinned by `NODE_VERSION` in `nixpacks.toml`.
+
+**3. Prove the bundle before shipping.**
+
+```bash
+npm run build          # with VITE_DIRECTUS_URL pointed at the real instance
+npm run deploy:check   # fails on the dev-default URL, secret names, plain-http URLs
+```
+
+The gate exists because an earlier image shipped with `localhost:8055` baked in — every public
+visitor's browser would have called its own machine. `.github/workflows/ci.yml` runs the same
+gate on every push — `npm ci`, `npm test`, `npm run typecheck`, `npm run scripts:check`,
+`npm run build`, `npm run deploy:check` — using the repository variable `VITE_DIRECTUS_URL`
+when set, a placeholder otherwise, so the gate cannot be skipped silently.
+
+**4. Domain.** Nothing in the app is domain-bound: short links and QR payloads use
+`window.location.origin`, and the QR handler judges a browser `Origin` against the host the
+request arrived on (`X-Forwarded-Host` aware), so any hostname works without allowlist edits.
+After binding the domain, add it to the remote Directus `CORS_ORIGIN`. Keep HTTPS on the
+platform edge — a PWA needs a secure origin. For API-enforced card isolation use a licensed
+Directus (see "Roles and card ownership").

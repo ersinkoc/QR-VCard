@@ -1,0 +1,40 @@
+# Nixpacks build plan — builds the same single-port production image as the root
+# Dockerfile, without a checked-in Dockerfile (Railway and Coolify run Nixpacks
+# from this file; locally: `nixpacks build . --name qr-vcard`).
+#
+# The start command runs server/serve.mjs: the built SPA from dist/, the QR
+# proxy (POST /api/qr) and GET /healthz all on one port.
+#
+# Environment the deployment needs:
+#   VITE_DIRECTUS_URL  BUILD-time  the public Directus URL, inlined into the
+#                                  client bundle by Vite. Set it in the deploy
+#                                  platform's variables BEFORE the first build;
+#                                  changing it later triggers a rebuild with the
+#                                  new value. After a local build, prove what got
+#                                  inlined with `npm run deploy:check`.
+#   QR_API_KEY         RUN-time    QR provider key — read by server/serve.mjs
+#                                  only, never shipped to the browser.
+#   PORT               RUN-time    listen port, default 8080.
+#
+# Provision the REMOTE Directus once, with the admin token, from any machine
+# that can reach it (never from this app — the token must not ship anywhere):
+#   DIRECTUS_URL=https://directus.example.com DIRECTUS_ADMIN_TOKEN=<token> \
+#     npm run directus:bootstrap
+#   DIRECTUS_URL=https://directus.example.com DIRECTUS_ADMIN_TOKEN=<token> \
+#     npm run directus:verify
+# The remote instance must also allow the app's domain in CORS_ORIGIN.
+
+[variables]
+NODE_VERSION = "24"
+NPM_CONFIG_AUDIT = "false"
+NPM_CONFIG_FUND = "false"
+NPM_CONFIG_UPDATE_NOTIFIER = "false"
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "node server/serve.mjs"

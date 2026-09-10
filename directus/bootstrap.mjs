@@ -50,7 +50,11 @@ if (!existsSync(ENV_PATH)) {
   console.log(`[bootstrap] wrote ${ENV_PATH}`);
 }
 
-const env = { ...DEFAULTS, ...process.env, ...readEnvFile() };
+// Precedence: process env > directus/.env file > defaults — the reverse of the old
+// order. `DIRECTUS_URL=https://remote npm run directus:bootstrap` (the remote
+// admin-token flow in README) must not be silently overridden by leftover
+// localhost values in directus/.env; verify.mjs already resolves env this way.
+const env = { ...DEFAULTS, ...readEnvFile(), ...process.env };
 const BASE = env.DIRECTUS_URL.replace(/\/+$/, '');
 
 async function api(path, { method = 'GET', body, token } = {}) {
