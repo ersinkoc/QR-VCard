@@ -36,3 +36,15 @@ export function canManage(record: OwnedRecord, actor: Actor): boolean {
   if (isPrivileged(actor)) return true;
   return Boolean(record.user_created) && record.user_created === actor.id;
 }
+
+/**
+ * The query filter that scopes a card list to its owner, or `undefined` for
+ * privileged actors (who see everything).
+ *
+ * This is a domain decision, which is why it lives here: the Directus SDK hands
+ * the API an opaque request descriptor, so a test can assert this shape but
+ * cannot read it back out of the adapter.
+ */
+export function cardScopeFilter(actor: Actor): { user_created: { _eq: string } } | undefined {
+  return isPrivileged(actor) ? undefined : { user_created: { _eq: actor.id } };
+}

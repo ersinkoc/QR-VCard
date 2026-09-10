@@ -8,7 +8,7 @@ import {
   rest,
   updateItem,
 } from '@directus/sdk';
-import { canManage, isPrivileged } from './ownership';
+import { canManage, cardScopeFilter } from './ownership';
 
 export { isPrivileged } from './ownership';
 
@@ -82,9 +82,8 @@ export async function fetchMe(): Promise<MeInfo> {
  * still read the collection directly. See README, "Roles and card ownership".
  */
 export async function listCards(me: MeInfo): Promise<VCard[]> {
-  const filter = isPrivileged(me) ? undefined : { user_created: { _eq: me.id } };
   const rows = (await directus.request(
-    readItems('vcards', { sort: ['-date_created'], limit: 200, filter }),
+    readItems('vcards', { sort: ['-date_created'], limit: 200, filter: cardScopeFilter(me) }),
   )) as VCard[];
   return rows;
 }
