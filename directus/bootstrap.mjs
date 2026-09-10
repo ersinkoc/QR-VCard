@@ -288,8 +288,13 @@ async function main() {
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(() => {
+    // Set the code instead of calling process.exit(): exiting while fetch
+    // sockets are still tearing down has thrown a libuv assertion on Windows,
+    // and process.exit can truncate buffered output.
+    process.exitCode = 0;
+  })
   .catch((err) => {
     console.error(`[bootstrap] FAILED: ${err?.message ?? err}`);
-    process.exit(1);
+    process.exitCode = 1;
   });

@@ -128,9 +128,12 @@ async function main() {
 main()
   .then(() => {
     console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
-    process.exit(failures === 0 ? 0 : 1);
+    // Set the code instead of calling process.exit(): exiting while fetch
+    // sockets are still tearing down has thrown a libuv assertion on Windows,
+    // and process.exit can truncate buffered output.
+    process.exitCode = failures === 0 ? 0 : 1;
   })
   .catch((err) => {
     console.error(`verify crashed: ${err?.message ?? err}`);
-    process.exit(1);
+    process.exitCode = 1;
   });

@@ -6,6 +6,7 @@ dev-dist/
 # Local secrets. The QR proxy reads QR_API_KEY from the root .env, so this
 # pattern matters as much as directus/.env below; .env.example stays tracked.
 .env
+server/.env
 
 # Directus (Docker volumes live in named volumes; local-only artifacts below)
 directus/.env
