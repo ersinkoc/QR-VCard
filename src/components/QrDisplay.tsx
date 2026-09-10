@@ -7,17 +7,27 @@ export default function QrDisplay({ data, size = 240, className }: { data: strin
 
   useEffect(() => {
     let alive = true;
+    let objectUrl: string | null = null;
     setSrc(null);
     setFailed(false);
     qrUrl(data)
       .then((u) => {
-        if (alive) setSrc(u);
+        if (!alive) {
+          if (u.startsWith('blob:')) URL.revokeObjectURL(u);
+          return;
+        }
+        objectUrl = u;
+        setSrc(u);
       })
       .catch(() => {
         if (alive) setFailed(true);
       });
     return () => {
       alive = false;
+      // qrUrl() hands back a blob: URL for the provider's PNG bytes; release it
+      // when this card is unmounted or the data changes, or every render leaks
+      // one image.
+      if (objectUrl?.startsWith('blob:')) URL.revokeObjectURL(objectUrl);
     };
   }, [data]);
 

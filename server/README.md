@@ -31,8 +31,9 @@ curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
   -X POST https://app.example.com/api/qr \
   -H 'Content-Type: application/json' -d '{"inputText":"https://app.example.com/c/demo"}'
 # Must NOT be "200 text/html" — that means the SPA served the request instead of the proxy.
-# While the provider's own endpoint returns a bare 500, a 500 here is the CORRECT result:
-# it proves the route reached the proxy and the proxy attached the key (a keyless call is 401).
+# Expect "200 image/png" with 100 KB+ of raw PNG bytes. A 500 with an empty body means the
+# request reached the provider but its body was incomplete (the provider throws on partial
+# InputParameters), and 401 means the key never got attached.
 ```
 
 ## nginx (same origin)

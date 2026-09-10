@@ -113,37 +113,36 @@ Copy-pasteable production recipes — nginx and Caddy snippets, a `server/Docker
 `docker-compose.yml`, a systemd unit, and a deployment checklist — are in
 [`server/README.md`](server/README.md).
 
-## QR API status (blocked upstream)
+## QR API status (working)
 
-The request side is implemented: `src/lib/qr.ts` POSTs a JSON `InputParameters` body (the link in
-`inputText`, plus `exportWidth`, `exportPNG` and `eccLevel`) to the **server-side proxy** at
-`/api/qr`, which attaches the provider's `ApiKey` header and forwards to
-`{QR_API_URL}/QR/create`. The browser never holds the key.
+`src/lib/qr.ts` POSTs a JSON `InputParameters` body to the **server-side proxy** at `/api/qr`,
+which attaches the provider's `ApiKey` header and forwards to `{QR_API_URL}/QR/create`. The
+browser never holds the key.
 
-**Response parsing is deliberately not implemented yet.** As of 2026-09-10 the provider's endpoint
-answers every authenticated request with a bare `500` — no `Content-Type`, zero bytes — for every
-payload tried, including its own documented example, so the success shape (raw PNG, JSON with
-base64, or a URL) has never been observed. `parseQrResponse()` throws with the observed evidence
-instead of guessing, and `qrUrl()` keeps its async “resolve to an `<img>`-usable src” contract, so
-wiring the real parsing later touches one function and no consumers.
+**The body must be complete.** The provider answers a bare `500` (no `Content-Type`, zero bytes)
+whenever a nested parameter is missing — even `{"inputText": "..."}` on its own fails. The
+colours, eye, gradient, logo and premium parameter objects in `src/lib/qr.ts` are copied from a
+payload that returns `200`; `src/lib/qr.test.ts` locks their completeness so the failure cannot
+creep back in.
 
-**The browser path is blocked by CORS, independently of the 500.** A preflight `OPTIONS` to
-`/QR/create` returns `204` with `Access-Control-Allow-Origin: *` but **no**
-`Access-Control-Allow-Methods` and **no** `Access-Control-Allow-Headers`. Because the request
-carries the non-simple `ApiKey` header, a browser requires both of those to list/cover `POST` and
-`apikey` — without them the preflight fails and the real POST is never sent. The actual `POST`
-response currently carries no `Access-Control-Allow-Origin` either, which a browser needs in order
-to let the caller read the result. Both are provider-side fixes.
+**A successful response is raw PNG bytes** (`content-type: image/png`, ~100–150 KB), not JSON —
+despite the Swagger declaring `produces: application/json` with no 200 schema. `parseQrResponse()`
+turns those bytes into a `blob:` URL, and `QrDisplay` revokes it when the card unmounts.
 
-Re-check the endpoint with:
+The provider's own CORS headers are still incomplete (`OPTIONS` returns `204` with
+`Access-Control-Allow-Origin: *` but no `Allow-Methods`/`Allow-Headers`), so a browser could not
+call it directly — irrelevant here, because the browser calls our proxy and the proxy calls the
+provider server-to-server.
+
+Re-check everything with:
 
 ```bash
 npm run qr:verify
 ```
 
-That prints the status, content type and classified body shape for the minimal and documented
-payloads, plus a keyless control request that must return `401`. Implement `parseQrResponse()`
-from what it reports once the provider returns a usable `200`.
+It asserts the complete body returns a `200` image, reports the minimal body as context (the
+provider's `500` on partial bodies is the root cause of that failure mode), and prints the
+provider's CORS headers as information.
 
 ## Directus 12 notes (important)
 

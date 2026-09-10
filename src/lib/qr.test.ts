@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { qrRequest, qrUrl, requestQr } from './qr';
 
-// 1x1 PNG — stands in for whatever image bytes the provider eventually returns.
+// 1x1 PNG — stands in for the provider's raw image bytes.
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
   'base64',
@@ -47,15 +47,30 @@ describe('qrRequest', () => {
     expect(qrRequest('x').url).toBe('https://app.example.com/api/qr');
   });
 
-  it('sends a JSON InputParameters body', () => {
-    const { init } = qrRequest('https://host/c/abc');
-    expect(init.headers).toMatchObject({ 'Content-Type': 'application/json' });
-    expect(JSON.parse(String(init.body))).toMatchObject({
+  it('sends the COMPLETE InputParameters body the provider requires', () => {
+    const body = JSON.parse(String(qrRequest('https://host/c/abc').init.body));
+
+    expect(body).toMatchObject({
       inputText: 'https://host/c/abc',
+      exportWidth: 1000,
       exportPNG: true,
-      exportWidth: 512,
-      eccLevel: 'M',
+      eccLevel: 'H',
+      shapeName: 'One',
     });
+
+    // Regression lock: a partial body — `inputText` alone, or one missing the
+    // premium colour fields — makes the provider answer a bare 500 (verified
+    // against the live API). Every nested object must stay complete.
+    expect(body.colorParameters).toMatchObject({
+      premiumFiveFirst: '000000',
+      premiumCrossFourth: '888888',
+      background: 'ffffff',
+      useRandomColors: false,
+    });
+    expect(body.eyeParameters).toMatchObject({ eyeFrameType: 'Square', eyeBallType: 'Circle', randomEyeFrame: false });
+    expect(body.gradientParameters).toMatchObject({ linearGradient: false, gradientColorFirstHex: 'ff0000' });
+    expect(body.logoParameters).toMatchObject({ logoName: 'empty', logoBackgroundColorHexFormat: '' });
+    expect(body.premiumParameters).toMatchObject({ five: true, cross: true, vertical: true });
   });
 
   it('never sends an authorization header — the ApiKey lives only in the proxy', () => {
@@ -110,13 +125,19 @@ describe('qrUrl against a stub proxy (real HTTP, fake provider)', () => {
     expect(JSON.parse(last?.body ?? '{}').inputText).toBe('https://host/c/abc');
   });
 
-  it('surfaces a provider 500 passed through the proxy (empty body, no content type)', async () => {
-    await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/HTTP 500 \(empty body\)/);
+  it('resolves to a blob: URL carrying the provider PNG', async () => {
+    reply = { status: 200, contentType: 'image/png', body: PNG };
+
+    const src = await qrUrl('https://host/c/abc');
+
+    expect(src.startsWith('blob:')).toBe(true);
+    const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer());
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]); // PNG magic
+    URL.revokeObjectURL(src);
   });
 
-  it('rejects a 200 until response parsing is implemented, rather than guessing the shape', async () => {
-    reply = { status: 200, contentType: 'image/png', body: PNG };
-    await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/not implemented/);
+  it('surfaces a provider 500 passed through the proxy (empty body, no content type)', async () => {
+    await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/HTTP 500 \(empty body\)/);
   });
 
   it('reports a missing proxy route when the origin answers with the SPA shell', async () => {
@@ -126,5 +147,10 @@ describe('qrUrl against a stub proxy (real HTTP, fake provider)', () => {
       body: Buffer.from('<!doctype html><html><body>app</body></html>'),
     };
     await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/returned HTML.*no route handled/);
+  });
+
+  it('rejects a 200 that is not an image, and says what it got', async () => {
+    reply = { status: 200, contentType: 'application/json', body: Buffer.from('{"url":"https://cdn.example/qr.png"}') };
+    await expect(qrUrl('https://host/c/abc')).rejects.toThrow(/expected raw image bytes/);
   });
 });
