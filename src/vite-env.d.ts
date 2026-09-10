@@ -4,6 +4,7 @@
 interface ImportMetaEnv {
   readonly VITE_DIRECTUS_URL?: string;
   readonly VITE_QR_API_URL?: string;
+  readonly VITE_QR_API_KEY?: string;
 }
 
 interface ImportMeta {
