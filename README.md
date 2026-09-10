@@ -109,6 +109,10 @@ different origins, set `VITE_QR_PROXY_URL` and list the app's origin in `QR_ALLO
 otherwise put the proxy behind the same host (for example a reverse proxy on `/api/qr`) and leave
 `VITE_QR_PROXY_URL` unset.
 
+Copy-pasteable production recipes — nginx and Caddy snippets, a `server/Dockerfile` +
+`docker-compose.yml`, a systemd unit, and a deployment checklist — are in
+[`server/README.md`](server/README.md).
+
 ## QR API status (blocked upstream)
 
 The request side is implemented: `src/lib/qr.ts` POSTs a JSON `InputParameters` body (the link in

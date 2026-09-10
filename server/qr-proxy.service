@@ -1,0 +1,40 @@
+[Unit]
+Description=QR-VCard QR API proxy (holds the provider ApiKey server-side)
+Documentation=https://github.com/your-org/qr-vcard/blob/main/server/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Deploy the repository to /opt/qr-vcard; the proxy has no dependencies.
+WorkingDirectory=/opt/qr-vcard
+# Secrets live here (QR_API_KEY, QR_API_URL, PORT, QR_ALLOWED_ORIGINS), mode 640.
+EnvironmentFile=/etc/qr-vcard/qr-proxy.env
+ExecStart=/usr/bin/node server/qr-proxy.mjs
+
+User=qrproxy
+Group=qrproxy
+Restart=always
+RestartSec=3
+TimeoutStopSec=5
+
+# Hardening: the process only needs outbound HTTPS to the provider and its own
+# listening socket, so take away everything else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
