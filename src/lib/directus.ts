@@ -2,11 +2,15 @@ import {
   authentication,
   createDirectus,
   createItem,
+  createUser,
   deleteItem,
   readItems,
   readMe,
+  readRoles,
+  readUsers,
   rest,
   updateItem,
+  updateUser,
 } from '@directus/sdk';
 import { canManage, cardScopeFilter, assignOwner, isPrivileged } from './ownership';
 
@@ -151,10 +155,18 @@ export async function fetchPublishedByCode(code: string): Promise<VCard | null> 
 }
 
 // --- user administration (requires the Administrator role in Directus) -------
+//
+// These use the SDK's *system* functions (`readUsers`, `readRoles`,
+// `createUser`, `updateUser`), NOT `readItems('directus_users')`. The Items API
+// (`/items/{collection}`) only serves user-defined collections: for a core
+// collection it answers 403 FORBIDDEN ("You don't have permission to access
+// this.") even for an administrator, because the route does not serve those
+// collections at all. Each core collection has its own endpoint (`/users`,
+// `/roles`, `/files`, ...), which is what these helpers build.
 
 export async function listPanelUsers(): Promise<PanelUser[]> {
   const rows = (await directus.request(
-    readItems('directus_users', {
+    readUsers({
       fields: ['id', 'email', 'first_name', 'last_name', 'status', { role: ['name'] }],
       sort: ['email'],
       limit: 200,
@@ -180,7 +192,7 @@ export async function listPanelUsers(): Promise<PanelUser[]> {
 /** Roles a new panel user can be given — never Administrator. */
 export async function listAssignableRoles(): Promise<{ id: string; name: string }[]> {
   const rows = (await directus.request(
-    readItems('directus_roles', { fields: ['id', 'name'], limit: 100 }),
+    readRoles({ fields: ['id', 'name'], limit: 100 }),
   )) as { id: string; name: string }[];
   return rows.filter((role) => role.name !== 'Administrator');
 }
@@ -192,7 +204,7 @@ export async function createPanelUser(input: {
   roleId: string;
 }): Promise<void> {
   await directus.request(
-    createItem('directus_users', {
+    createUser({
       email: input.email,
       password: input.password,
       first_name: input.first_name,
@@ -203,7 +215,7 @@ export async function createPanelUser(input: {
 }
 
 export async function setPanelUserPassword(id: string, password: string): Promise<void> {
-  await directus.request(updateItem('directus_users', id, { password }));
+  await directus.request(updateUser(id, { password }));
 }
 
 export function shortUrl(code: string): string {

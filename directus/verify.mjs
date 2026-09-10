@@ -123,6 +123,21 @@ async function main() {
     const del2 = await call(`/items/vcards/${ownId}`, { method: 'DELETE', token: userToken });
     check('user can delete own card', del2.status === 204 || del2.status === 200);
   }
+
+  // 5. Core collections are NOT served by the Items API.
+  // `/items/{collection}` only serves user-defined collections: for a core
+  // collection it answers 403 even to an administrator (the route does not serve
+  // it at all, so it is not a permission problem). That is why the adapter must
+  // call the system endpoints (/users, /roles, ...). This contract is locked
+  // here because unit tests cannot catch a wrong endpoint — the SDK request
+  // object is opaque, so a mocked `request` sees nothing to assert on.
+  const adminToken = await login(env.ADMIN_EMAIL || 'admin@local.dev', env.ADMIN_PASSWORD || 'vcard-admin');
+  const itemsCore = await call('/items/directus_users?limit=1', { token: adminToken });
+  check('core collection is refused by the Items API (403, even for an admin)', itemsCore.status === 403, `status=${itemsCore.status}`);
+  const usersRes = await call('/users?limit=1', { token: adminToken });
+  check('core collection is served by its system endpoint (/users)', usersRes.status === 200 && Array.isArray(usersRes.json?.data), `status=${usersRes.status}`);
+  const rolesRes = await call('/roles?limit=1', { token: adminToken });
+  check('roles are served by /roles', rolesRes.status === 200 && Array.isArray(rolesRes.json?.data), `status=${rolesRes.status}`);
 }
 
 main()
