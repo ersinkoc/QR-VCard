@@ -53,6 +53,20 @@ function LoginForm({ onLoggedIn }: { onLoggedIn: () => void }) {
 
 function QrModal({ card, onClose }: { card: VCard; onClose: () => void }) {
   const url = shortUrl(card.code);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  // qrUrl() rejects when the API is unconfigured, unreachable, or blocked by
+  // CORS; without this the button would fail silently and leave an unhandled
+  // rejection behind.
+  async function onDownload() {
+    setDownloadError(null);
+    try {
+      await downloadQr(url, `qr-${card.code}.png`);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : 'QR download failed.');
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div className="card bg-surface p-6" onClick={(e) => e.stopPropagation()}>
@@ -61,13 +75,14 @@ function QrModal({ card, onClose }: { card: VCard; onClose: () => void }) {
         <p className="code mt-4 text-center text-muted">{url}</p>
         <div className="mt-4 flex justify-center gap-2">
           <CopyButton text={url} />
-          <button type="button" className="btn btn-secondary" onClick={() => void downloadQr(url, `qr-${card.code}.png`)}>
+          <button type="button" className="btn btn-secondary" onClick={() => void onDownload()}>
             Download
           </button>
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             Close
           </button>
         </div>
+        {downloadError && <p className="mt-3 text-center text-sm text-red-600">{downloadError}</p>}
       </div>
     </div>
   );
