@@ -1,34 +1,61 @@
-import type { VCard } from '../lib/directus';
-import { downloadVcf, fileNameFor } from '../lib/vcf';
+import { useState } from 'react';
+import { useI18n } from '../i18n';
+import type { PublicCard } from '../lib/api';
+import { displayName, publicPhotoUrl } from '../lib/api';
+import { blobToBase64 } from '../lib/image';
+import { contactFromCard, downloadVcf } from '../lib/vcf';
 
-export default function ContactActions({ card }: { card: VCard }) {
-  const tel = card.phone?.replace(/\s+/g, '') ?? null;
+export default function ContactActions({ card }: { card: PublicCard }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const tel = card.phone?.replace(/[^\d+]/g, '') ?? null;
   const wa = card.phone ? `https://wa.me/${card.phone.replace(/[^\d]/g, '')}` : null;
-  const name = [card.first_name, card.last_name].filter(Boolean).join(' ').trim() || 'Contact';
+  const name = displayName(card) || card.organization || t('scan.contact');
+
+  async function addToContacts() {
+    setBusy(true);
+    try {
+      const contact = contactFromCard(card);
+      // Embed the photo so it lands in the address book too; a failure just
+      // leaves it out rather than blocking the contact.
+      const photoUrl = publicPhotoUrl(card, 'jpg');
+      if (photoUrl) {
+        try {
+          const res = await fetch(photoUrl);
+          if (res.ok) contact.photo = { base64: await blobToBase64(await res.blob()), type: 'JPEG' };
+        } catch {
+          /* photo optional */
+        }
+      }
+      downloadVcf(contact);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="grid grid-cols-2 gap-2">
-      <button type="button" className="btn btn-primary col-span-2" onClick={() => downloadVcf(card)}>
-        Add to contacts
+      <button type="button" className="btn btn-primary col-span-2" disabled={busy} onClick={() => void addToContacts()}>
+        {t('scan.addContact')}
       </button>
       {tel && (
         <a className="btn btn-secondary" href={`tel:${tel}`}>
-          Call
+          {t('scan.call')}
         </a>
       )}
       {card.email && (
         <a className="btn btn-secondary" href={`mailto:${card.email}`}>
-          Email
+          {t('scan.email')}
         </a>
       )}
       {wa && (
         <a className="btn btn-secondary" href={wa} target="_blank" rel="noreferrer">
-          WhatsApp
+          {t('scan.whatsapp')}
         </a>
       )}
       {card.website && (
         <a className="btn btn-secondary" href={card.website} target="_blank" rel="noreferrer">
-          Website
+          {t('scan.website')}
         </a>
       )}
       {/* Web Share API: the OS share sheet on phones; hidden where unsupported. */}
@@ -42,11 +69,9 @@ export default function ContactActions({ card }: { card: VCard }) {
             });
           }}
         >
-          Share
+          {t('scan.share')}
         </button>
       )}
     </div>
   );
 }
-
-export { fileNameFor };

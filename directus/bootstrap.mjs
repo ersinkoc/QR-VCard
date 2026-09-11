@@ -6,22 +6,47 @@
  *   docker compose -f directus/docker-compose.yml up -d
  * or remote: put DIRECTUS_URL + DIRECTUS_ADMIN_TOKEN (admin static token) in directus/.env.
  *
- * Ensures the `vcards` collection, roles `vcard-editor` / `vcard-user`
- * (each with its own policy + permissions), the two panel users and one
- * published seed card (code `demo-01`). Safe to re-run.
+ * Ensures the `vcards` collection, roles `vcard-editor` / `vcard-user` (policies
+ * WITHOUT any direct data access), the service account whose static token the
+ * app server uses (written to the root .env as DIRECTUS_TOKEN), the two demo
+ * accounts and one published seed card (code `demo-01`). Safe to re-run.
  */
-import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = join(HERE, '.env');
+/** The app server's env file — where DIRECTUS_URL / DIRECTUS_TOKEN are written. */
+const ROOT_ENV_PATH = join(HERE, '..', '.env');
+
+function readRootEnv() {
+  if (!existsSync(ROOT_ENV_PATH)) return {};
+  const out = {};
+  for (const line of readFileSync(ROOT_ENV_PATH, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (m && m[2].trim() !== '') out[m[1]] = m[2].trim();
+  }
+  return out;
+}
+
+/** Sets keys in the root .env, replacing existing lines and appending new ones. */
+function writeRootEnv(values) {
+  let text = existsSync(ROOT_ENV_PATH) ? readFileSync(ROOT_ENV_PATH, 'utf8') : '';
+  for (const [key, value] of Object.entries(values)) {
+    const re = new RegExp(`^${key}=.*$`, 'm');
+    if (re.test(text)) text = text.replace(re, `${key}=${value}`);
+    else text += `${text === '' || text.endsWith('\n') ? '' : '\n'}${key}=${value}\n`;
+  }
+  writeFileSync(ROOT_ENV_PATH, text);
+}
 
 const DEFAULTS = {
   DIRECTUS_URL: 'http://localhost:8055',
   ADMIN_EMAIL: 'admin@local.dev',
   ADMIN_PASSWORD: 'vcard-admin',
+  ADMIN_SEED_CODE: 'demo-admin',
   DIRECTUS_ADMIN_TOKEN: '',
   EDITOR_EMAIL: 'editor@local.dev',
   EDITOR_PASSWORD: 'vcard-editor',
@@ -138,12 +163,32 @@ async function main() {
     body: { meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] }, schema: { is_primary_key: true } },
   });
 
+  // Session epoch on accounts: the app server bumps it whenever a password is set,
+  // which invalidates every existing session cookie of that account.
+  const hasEpoch = await api('/fields/directus_users/qrv_session_epoch', { token: adminToken }).then(() => true, () => false);
+  if (!hasEpoch) {
+    await api('/fields/directus_users', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'qrv_session_epoch', type: 'integer', meta: { hidden: true, readonly: true, interface: 'input', note: 'QR-VCard session epoch (managed by the app server)' }, schema: { default_value: 0 } },
+    });
+    console.log('[bootstrap] field directus_users.qrv_session_epoch created');
+  }
+
   // ---- policies ------------------------------------------------------------
+  // The vCard policies grant NOTHING and no Studio access: people sign in to the
+  // QR-VCard app, whose server authorises each request and talks to Directus with
+  // the service token. The policies exist only so roles have something to hang on.
   const policies = await api('/policies?limit=-1', { token: adminToken });
   const ensurePolicy = async (name) => {
     const found = policies.find((p) => p.name === name);
-    if (found) return found.id;
-    const created = await api('/policies', { method: 'POST', token: adminToken, body: { name, app_access: true, admin_access: false } });
+    if (found) {
+      if (found.app_access || found.admin_access) {
+        await api(`/policies/${found.id}`, { method: 'PATCH', token: adminToken, body: { app_access: false, admin_access: false } });
+      }
+      return found.id;
+    }
+    const created = await api('/policies', { method: 'POST', token: adminToken, body: { name, app_access: false, admin_access: false } });
     return created.id;
   };
   // The built-in anonymous policy is stored under the untranslated label key
@@ -165,7 +210,7 @@ async function main() {
     const roles = await api(`/roles?filter[name][_eq]=${encodeURIComponent(name)}&fields=id,policies.policy&limit=-1`, { token: adminToken });
     let roleId = roles[0]?.id;
     if (!roleId) {
-      const created = await api('/roles', { method: 'POST', token: adminToken, body: { name, icon, description, app_access: true, admin_access: false } });
+      const created = await api('/roles', { method: 'POST', token: adminToken, body: { name, icon, description } });
       roleId = created.id;
     }
     const linked = (roles[0]?.policies ?? []).some((p) => (p.policy?.id ?? p.policy) === policyId);
@@ -175,69 +220,52 @@ async function main() {
     }
     return roleId;
   };
-  const editorRoleId = await ensureRole('vcard-editor', 'shield', 'Shared panel account: full vCard management', editorPolicyId);
-  const userRoleId = await ensureRole('vcard-user', 'account_circle', 'Owns and manages only their own vCards', userPolicyId);
+  const editorRoleId = await ensureRole('vcard-editor', 'shield', 'QR-VCard: manages every card', editorPolicyId);
+  const userRoleId = await ensureRole('vcard-user', 'account_circle', 'QR-VCard: owns and manages only their own cards', userPolicyId);
 
-  // ---- permissions (upsert under each policy) ------------------------------
-  const CONTACT_FIELDS = ['code', 'status', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'address', 'note', 'accent_color', 'photo', 'date_created'];
-  const SPEC = [
-    { policy: publicId, collection: 'directus_files', action: 'read', fields: ['*'], permissions: null },
-    { policy: editorPolicyId, collection: 'directus_files', action: 'read', fields: ['*'], permissions: null },
-    { policy: editorPolicyId, collection: 'directus_files', action: 'create', fields: ['*'], permissions: null },
-    { policy: userPolicyId, collection: 'directus_files', action: 'read', fields: ['*'], permissions: null },
-    { policy: userPolicyId, collection: 'directus_files', action: 'create', fields: ['*'], permissions: null },
-    { policy: publicId, collection: 'vcards', action: 'read', fields: CONTACT_FIELDS, permissions: { status: { _eq: 'published' } } },
-    { policy: editorPolicyId, collection: 'vcards', action: 'create', fields: ['*'], permissions: null },
-    { policy: editorPolicyId, collection: 'vcards', action: 'read', fields: ['*'], permissions: null },
-    { policy: editorPolicyId, collection: 'vcards', action: 'update', fields: ['*'], permissions: null },
-    { policy: editorPolicyId, collection: 'vcards', action: 'delete', fields: [], permissions: null },
-    { policy: userPolicyId, collection: 'vcards', action: 'create', fields: [...CONTACT_FIELDS.filter((f) => f !== 'date_created'), 'user_created'], permissions: null },
-    { policy: userPolicyId, collection: 'vcards', action: 'read', fields: ['*'], permissions: { user_created: { _eq: '$CURRENT_USER' } } },
-    { policy: userPolicyId, collection: 'vcards', action: 'update', fields: ['*'], permissions: { user_created: { _eq: '$CURRENT_USER' } } },
-    { policy: userPolicyId, collection: 'vcards', action: 'delete', fields: [], permissions: { user_created: { _eq: '$CURRENT_USER' } } },
-  ];
-
+  // ---- permissions: lock the data away from browsers ------------------------
+  // Earlier versions granted the public and vCard policies direct access to
+  // `vcards` and `directus_files`. Without a Directus license those grants could
+  // not be row-scoped, so any signed-in user could read, edit and delete EVERY
+  // card straight through the Directus API. Card access now lives in the app
+  // server (server/api.mjs), so every such grant is removed here.
+  const LOCKED = new Set(['vcards', 'directus_files']);
+  const lockedPolicies = new Set([publicId, editorPolicyId, userPolicyId]);
   const existingPerms = await api('/permissions?limit=-1', { token: adminToken });
-  let restrictedRule = false;
-  for (const spec of SPEC) {
-    const found = existingPerms.find((p) => p.policy === spec.policy && p.collection === spec.collection && p.action === spec.action);
-    const write = async (body) => {
-      try {
-        if (found) await api(`/permissions/${found.id}`, { method: 'PATCH', token: adminToken, body });
-        else await api('/permissions', { method: 'POST', token: adminToken, body });
-      } catch (err) {
-        // Directus 12 gates row-level filter rules behind a license
-        // (RESOURCE_RESTRICTED: custom_permission_rules_enabled). Fall back to a
-        // rule-less permission so local development still works.
-        if (/RESOURCE_RESTRICTED|custom_permission_rules_enabled/.test(err?.message ?? '')) {
-          restrictedRule = true;
-          // Directus 12 (unlicensed) accepts exactly one shape for any
-          // permission write: `permissions: null` + `fields: ['*']`. Both row
-          // filters and explicit field lists are gated features.
-          const downgraded = { ...body, fields: ['*'], permissions: null };
-          try {
-            if (found) await api(`/permissions/${found.id}`, { method: 'PATCH', token: adminToken, body: downgraded });
-            else await api('/permissions', { method: 'POST', token: adminToken, body: downgraded });
-            console.warn(`[bootstrap]   rule skipped for ${spec.collection}.${spec.action} (license-restricted)`);
-          } catch (retryErr) {
-            console.warn(`[bootstrap]   DOWNGRADE FAILED for ${spec.collection}.${spec.action}: ${retryErr?.message ?? retryErr}`);
-            throw retryErr;
-          }
-          return;
-        }
-        throw err;
-      }
-    };
-    await write(spec);
+  const stale = existingPerms.filter((p) => lockedPolicies.has(p.policy) && LOCKED.has(p.collection));
+  for (const perm of stale) {
+    await api(`/permissions/${perm.id}`, { method: 'DELETE', token: adminToken });
+    console.log(`[bootstrap] removed direct grant ${perm.collection}.${perm.action}`);
   }
-  if (restrictedRule) {
-    console.warn('[bootstrap] WARNING: this Directus has no license, so row-level permission rules were skipped.');
-    console.warn('[bootstrap]          Isolation of "own vCards" is therefore enforced in the app (listCards filters on user_created), not by the API.');
+  if (existsSync(join(HERE, '.bootstrap-state.json'))) rmSync(join(HERE, '.bootstrap-state.json'));
+  console.log('[bootstrap] public / vCard policies hold no direct data access');
+
+  // ---- service account: the app server's identity ---------------------------
+  // An Administrator-role account without a password, used only through its
+  // static token by server/api.mjs. Its token goes to DIRECTUS_TOKEN in the root
+  // .env — never to the browser.
+  const adminRole = (await api(`/roles?filter[name][_eq]=Administrator&fields=id&limit=1`, { token: adminToken }))[0];
+  if (!adminRole) throw new Error('no "Administrator" role found — the service account needs it');
+  // Directus validates the address strictly (a `.local` domain is refused).
+  const serviceEmail = env.SERVICE_EMAIL || 'qr-vcard-service@example.com';
+  let service = (await api(`/users?filter[email][_eq]=${encodeURIComponent(serviceEmail)}&fields=id&limit=1`, { token: adminToken }))[0];
+  if (!service) {
+    service = await api('/users', { method: 'POST', token: adminToken, body: { email: serviceEmail, first_name: 'QR-VCard', last_name: 'Service', role: adminRole.id, status: 'active' } });
+    console.log(`[bootstrap] service account ${serviceEmail} created`);
   }
-  // Record the capability so verify.mjs can report API-level isolation checks
-  // as explicit SKIPs instead of failures on an unlicensed instance.
-  writeFileSync(join(HERE, '.bootstrap-state.json'), `${JSON.stringify({ rowRulesSupported: !restrictedRule, at: new Date().toISOString() }, null, 2)}\n`);
-  console.log('[bootstrap] permissions ensured (public/editor/user policies)');
+  const rootEnv = readRootEnv();
+  const current = process.env.DIRECTUS_TOKEN || rootEnv.DIRECTUS_TOKEN || '';
+  const currentWorks = current
+    ? await api('/users/me?fields=id', { token: current }).then((me) => me?.id === service.id, () => false)
+    : false;
+  if (currentWorks) {
+    console.log('[bootstrap] DIRECTUS_TOKEN already belongs to the service account');
+  } else {
+    const token = randomBytes(32).toString('hex');
+    await api(`/users/${service.id}`, { method: 'PATCH', token: adminToken, body: { token } });
+    writeRootEnv({ DIRECTUS_TOKEN: token, ...(rootEnv.DIRECTUS_URL ? {} : { DIRECTUS_URL: BASE }) });
+    console.log(`[bootstrap] service token issued and written to ${ROOT_ENV_PATH} (DIRECTUS_TOKEN) — copy it to your deploy platform's variables`);
+  }
 
   // Directus caches permission/role metadata, so a verify run immediately after
   // bootstrap can still see the pre-change ACLs (public read intermittently
@@ -245,24 +273,98 @@ async function main() {
   await api('/utils/cache/clear', { method: 'POST', token: adminToken });
   console.log('[bootstrap] cache cleared');
 
+  // ---- ownership: vcards.owner -------------------------------------------------
+  // Directus stamps `user_created` with the CALLER on every create, and every
+  // create now comes from the service token — so ownership needs its own column,
+  // written only by the app server. It is an m2o to directus_users, so Studio
+  // shows the owner's email.
+  const hasOwner = await api('/fields/vcards/owner', { token: adminToken }).then(() => true, () => false);
+  if (!hasOwner) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        field: 'owner',
+        type: 'uuid',
+        meta: { interface: 'select-dropdown-m2o', special: ['m2o'], display: 'related-values', display_options: { template: '{{email}}' }, options: { template: '{{email}}' }, width: 'half', note: 'Card owner (managed by the QR-VCard server)' },
+        schema: {},
+      },
+    });
+    await api('/relations', {
+      method: 'POST',
+      token: adminToken,
+      body: { collection: 'vcards', field: 'owner', related_collection: 'directus_users', schema: { on_delete: 'SET NULL' } },
+    });
+    console.log('[bootstrap] field vcards.owner created (m2o -> directus_users)');
+  }
+  // How the card image is framed: `avatar` (round, cropped) or `logo` (uncropped).
+  const hasPhotoStyle = await api('/fields/vcards/photo_style', { token: adminToken }).then(() => true, () => false);
+  if (!hasPhotoStyle) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        field: 'photo_style',
+        type: 'string',
+        meta: { interface: 'select-dropdown', options: { choices: [{ text: 'Photo (round)', value: 'avatar' }, { text: 'Logo (uncropped)', value: 'logo' }] }, width: 'half' },
+        schema: { default_value: 'avatar', max_length: 16 },
+      },
+    });
+    console.log('[bootstrap] field vcards.photo_style created');
+  }
+
+  // Migrate: cards from before the owner column belong to whoever created them —
+  // unless that was the service account, in which case the admin takes them.
+  const adminMe = await api('/users/me?fields=id', { token: adminToken });
+  const unowned = await api('/items/vcards?filter[owner][_null]=true&fields=id,user_created&limit=-1', { token: adminToken });
+  for (const row of unowned) {
+    const creator = typeof row.user_created === 'object' ? row.user_created?.id : row.user_created;
+    const owner = creator && creator !== service.id ? creator : adminMe.id;
+    await api(`/items/vcards/${row.id}`, { method: 'PATCH', token: adminToken, body: { owner } });
+  }
+  if (unowned.length) console.log(`[bootstrap] ${unowned.length} card(s) given an owner`);
+
   // ---- panel users -----------------------------------------------------------
-  const ensureUser = async (email, password, roleId, first) => {
+  const ensureUser = async (email, password, roleId, first, last = '') => {
     const existing = await api(`/users?filter[email][_eq]=${encodeURIComponent(email)}&limit=-1`, { token: adminToken });
-    if (existing.length) return existing[0].id;
-    await api('/users', { method: 'POST', token: adminToken, body: { email, password, role: roleId, first_name: first, status: 'active' } });
+    if (existing.length) {
+      const u = existing[0];
+      const updates = {};
+      if (u.status !== 'active') updates.status = 'active';
+      if ((u.role?.id ?? u.role) !== roleId) updates.role = roleId;
+      if (!u.first_name && first) updates.first_name = first;
+      if (!u.last_name && last) updates.last_name = last;
+      if (Object.keys(updates).length > 0) {
+        await api(`/users/${u.id}`, { method: 'PATCH', token: adminToken, body: updates });
+        console.log(`[bootstrap] user ${email} updated`);
+      }
+      return u.id;
+    }
+    await api('/users', {
+      method: 'POST',
+      token: adminToken,
+      body: { email, password, role: roleId, first_name: first, ...(last ? { last_name: last } : {}), status: 'active' },
+    });
     console.log(`[bootstrap] user ${email} created`);
     return (await api(`/users?filter[email][_eq]=${encodeURIComponent(email)}&limit=-1`, { token: adminToken }))[0].id;
   };
-  await ensureUser(env.EDITOR_EMAIL, env.EDITOR_PASSWORD, editorRoleId, 'Panel');
-  await ensureUser(env.USER_EMAIL, env.USER_PASSWORD, userRoleId, 'Ada');
 
-  // ---- seed card -------------------------------------------------------------
+  // 1. Administrator: manages everything (cards + user accounts)
+  const adminId = await ensureUser(env.ADMIN_EMAIL, env.ADMIN_PASSWORD, adminRole.id, 'Admin', 'User');
+  // 2. Editor: manages all cards across the system, cannot manage users
+  const editorId = await ensureUser(env.EDITOR_EMAIL, env.EDITOR_PASSWORD, editorRoleId, 'Editor', 'User');
+  // 3. User: has their own account, manages only their own cards
+  const userId = await ensureUser(env.USER_EMAIL, env.USER_PASSWORD, userRoleId, 'Ada', 'Lovelace');
+
+  // ---- seed cards ------------------------------------------------------------
+  // 1. User demo card (/c/demo-01) owned by Ada (vcard-user)
   const seed = await findOne(`/items/vcards?filter[code][_eq]=${encodeURIComponent(env.SEED_CODE)}&limit=-1`, adminToken);
   if (!seed) {
     await api('/items/vcards', {
       method: 'POST',
       token: adminToken,
       body: {
+        owner: userId,
         status: 'published',
         code: env.SEED_CODE,
         first_name: 'Ada',
@@ -273,22 +375,60 @@ async function main() {
         email: 'ada@example.com',
         website: 'https://example.com/ada',
         address: '12 St James’s Square, London',
-        note: 'Seed demo card — publish or delete freely.',
+        note: 'Seed user demo card — owned by Ada (vcard-user).',
         accent_color: '#4f46e5',
       },
     });
-    console.log(`[bootstrap] seed card created (code ${env.SEED_CODE})`);
+    console.log(`[bootstrap] seed user card created (code ${env.SEED_CODE}, owner: ${env.USER_EMAIL})`);
   } else {
-    console.log('[bootstrap] seed card exists');
-    // Self-heal: the demo card must stay published, otherwise the public scan
-    // page (and verify.mjs) has nothing to read.
-    if (seed.status !== 'published') {
-      await api(`/items/vcards/${seed.id}`, { method: 'PATCH', token: adminToken, body: { status: 'published' } });
-      console.log('[bootstrap] seed card restored to published');
+    console.log('[bootstrap] seed user card exists');
+    const updates = {};
+    if (seed.status !== 'published') updates.status = 'published';
+    const currentOwner = typeof seed.owner === 'object' ? seed.owner?.id : seed.owner;
+    if (!currentOwner && userId) updates.owner = userId;
+    if (Object.keys(updates).length > 0) {
+      await api(`/items/vcards/${seed.id}`, { method: 'PATCH', token: adminToken, body: updates });
+      console.log('[bootstrap] seed user card updated/healed');
     }
   }
 
-  console.log('[bootstrap] done. Scan target for testing: /c/' + env.SEED_CODE);
+  // 2. Admin demo card (/c/demo-admin) owned by Admin (Administrator)
+  const adminCardCode = env.ADMIN_SEED_CODE || 'demo-admin';
+  const adminSeed = await findOne(`/items/vcards?filter[code][_eq]=${encodeURIComponent(adminCardCode)}&limit=-1`, adminToken);
+  if (!adminSeed) {
+    await api('/items/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        owner: adminId,
+        status: 'published',
+        code: adminCardCode,
+        first_name: 'Admin',
+        last_name: 'System',
+        organization: 'QR-VCard Operations',
+        job_title: 'System Administrator',
+        phone: '+90 555 000 0000',
+        email: env.ADMIN_EMAIL,
+        website: 'https://example.com',
+        address: 'Istanbul, Turkey',
+        note: 'Seed admin demo card — owned by Admin (Administrator).',
+        accent_color: '#0f172a',
+      },
+    });
+    console.log(`[bootstrap] seed admin card created (code ${adminCardCode}, owner: ${env.ADMIN_EMAIL})`);
+  } else {
+    console.log('[bootstrap] seed admin card exists');
+    const updates = {};
+    if (adminSeed.status !== 'published') updates.status = 'published';
+    const currentOwner = typeof adminSeed.owner === 'object' ? adminSeed.owner?.id : adminSeed.owner;
+    if (!currentOwner && adminId) updates.owner = adminId;
+    if (Object.keys(updates).length > 0) {
+      await api(`/items/vcards/${adminSeed.id}`, { method: 'PATCH', token: adminToken, body: updates });
+      console.log('[bootstrap] seed admin card updated/healed');
+    }
+  }
+
+  console.log(`[bootstrap] done. Scan targets: /c/${env.SEED_CODE} (User) and /c/${adminCardCode} (Admin)`);
 }
 
 main()

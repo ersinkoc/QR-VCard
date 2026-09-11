@@ -1,93 +1,106 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import Avatar from '../components/Avatar';
 import ContactActions from '../components/ContactActions';
 import CopyButton from '../components/CopyButton';
+import LanguageSwitch from '../components/LanguageSwitch';
 import QrDisplay from '../components/QrDisplay';
-import type { VCard } from '../lib/directus';
-import { fetchPublishedByCode, shortUrl } from '../lib/directus';
+import { useI18n } from '../i18n';
+import type { PublicCard } from '../lib/api';
+import { displayName, fetchPublicCard, publicPhotoUrl, shortUrl } from '../lib/api';
 
-function Initials({ text }: { text: string }) {
-  const parts = text.trim().split(/\s+/).filter(Boolean);
-  const initials = (parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1]![0] : '');
-  return (
-    <div className="flex h-20 w-20 items-center justify-center rounded-full text-xl font-medium" style={{ backgroundColor: 'color-mix(in oklab, var(--color-accent) 15%, transparent)' }}>
-      <span className="text-accent" aria-hidden>
-        {initials.toUpperCase()}
-      </span>
-    </div>
-  );
-}
+type State = { kind: 'loading' } | { kind: 'missing' } | { kind: 'failed' } | { kind: 'ready'; card: PublicCard };
 
 export default function ScanPage() {
+  const { t } = useI18n();
   const { code = '' } = useParams();
-  // 'loading' sentinel distinguishes "still fetching" from "not found".
-  const [card, setCard] = useState<VCard | null | 'loading'>('loading');
+  const [state, setState] = useState<State>({ kind: 'loading' });
+  const [attempt, setAttempt] = useState(0);
   const [showQr, setShowQr] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    setCard('loading');
-    fetchPublishedByCode(code)
-      .then((c) => {
-        if (alive) setCard(c);
+    setState({ kind: 'loading' });
+    fetchPublicCard(code)
+      .then((card) => {
+        if (alive) setState(card ? { kind: 'ready', card } : { kind: 'missing' });
       })
       .catch(() => {
-        if (alive) setCard(null);
+        // A network or server failure is not "not found": say so, and offer a retry.
+        if (alive) setState({ kind: 'failed' });
       });
     return () => {
       alive = false;
     };
-  }, [code]);
+  }, [code, attempt]);
 
-  if (card === 'loading') {
+  const name = state.kind === 'ready' ? displayName(state.card) || state.card.organization || t('scan.contact') : '';
+  useEffect(() => {
+    document.title = name ? `${name} · QR-VCard` : 'QR-VCard';
+  }, [name]);
+
+  if (state.kind === 'loading') {
     return (
       <main className="flex min-h-dvh items-center justify-center bg-bg px-4 page-pad">
-        <p className="text-muted">Loading…</p>
+        <p className="text-muted">{t('common.loading')}</p>
       </main>
     );
   }
 
-  if (!card) {
+  if (state.kind !== 'ready') {
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-bg px-4 page-pad">
-        <div className="card max-w-sm p-8 text-center">
-          <p className="font-semibold tracking-tight">Card not available</p>
-          <p className="mt-2 text-sm text-muted">This link is either wrong or the card is not published.</p>
-          <Link to="/" className="btn btn-ghost mt-4">
-            Go home
-          </Link>
+      <main className="relative flex min-h-dvh items-center justify-center bg-bg px-4 page-pad">
+        <LanguageSwitch className="absolute top-4 right-4" />
+        <div className="card max-w-sm p-8 text-center rise">
+          <p className="font-semibold tracking-tight">{state.kind === 'missing' ? t('scan.notFoundTitle') : t('errors.NETWORK')}</p>
+          <p className="mt-2 text-sm text-muted">{state.kind === 'missing' ? t('scan.notFoundBody') : t('scan.loadFailed')}</p>
+          <div className="mt-4 flex justify-center gap-2">
+            {state.kind === 'failed' && (
+              <button type="button" className="btn btn-secondary" onClick={() => setAttempt((n) => n + 1)}>
+                {t('common.retry')}
+              </button>
+            )}
+            <Link to="/" className="btn btn-ghost">
+              {t('scan.goHome')}
+            </Link>
+          </div>
         </div>
       </main>
     );
   }
 
-  const name = [card.first_name, card.last_name].filter(Boolean).join(' ').trim() || 'Contact';
+  const { card } = state;
   const url = shortUrl(card.code);
   const accent = card.accent_color ?? 'var(--color-accent)';
+  const subtitle = [card.job_title, displayName(card) ? card.organization : null].filter(Boolean).join(' · ');
 
   return (
     <main className="min-h-dvh bg-bg px-4 page-pad">
       <div className="mx-auto w-full max-w-md">
+        <div className="mb-3 flex justify-end">
+          <LanguageSwitch />
+        </div>
         <div className="card overflow-hidden rise">
-          {/* Accent stripe: a soft fade from the card's own colour instead of a
-              flat bar — the one flourish the visitor page carries. */}
-          <div
-            className="h-1.5 w-full"
-            style={{ background: `linear-gradient(90deg, ${accent}, color-mix(in oklab, ${accent} 55%, white))` }}
-          />
-          <div className="p-6">
-            <div className="flex items-center gap-4">
-              <Initials text={name} />
-              <div className="min-w-0">
-                <h1 className="truncate text-xl font-semibold tracking-tight">{name}</h1>
-                <p className="truncate text-sm text-muted">
-                  {[card.job_title, card.organization].filter(Boolean).join(' · ')}
-                </p>
+          {/* Accent band: the card's own colour, the one flourish the visitor page carries. */}
+          <div className="h-20 w-full" style={{ background: `linear-gradient(120deg, ${accent}, color-mix(in oklab, ${accent} 45%, white))` }} />
+          <div className="px-6 pb-6">
+            <div className="-mt-10 flex items-end gap-4">
+              <div className={`${card.photo_style === 'logo' ? 'rounded-2xl' : 'rounded-full'} border-4 border-surface bg-surface`}>
+                <Avatar name={name} photoUrl={publicPhotoUrl(card)} accent={card.accent_color} logo={card.photo_style === 'logo'} size={88} />
               </div>
             </div>
+            <h1 className="mt-3 text-2xl font-semibold tracking-tight break-words">{name}</h1>
+            {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
 
-            {card.address && <p className="mt-4 text-sm text-muted">{card.address}</p>}
-            {card.note && <p className="mt-2 text-sm text-muted">{card.note}</p>}
+            {(card.phone || card.email || card.website || card.address) && (
+              <dl className="mt-4 space-y-1.5 text-sm">
+                {card.phone && <dd className="break-words">{card.phone}</dd>}
+                {card.email && <dd className="break-words">{card.email}</dd>}
+                {card.website && <dd className="break-words">{card.website.replace(/^https?:\/\//, '')}</dd>}
+                {card.address && <dd className="whitespace-pre-line text-muted">{card.address}</dd>}
+              </dl>
+            )}
+            {card.note && <p className="mt-4 whitespace-pre-line rounded-lg bg-fg/5 p-3 text-sm">{card.note}</p>}
 
             <div className="mt-6">
               <ContactActions card={card} />
@@ -96,19 +109,21 @@ export default function ScanPage() {
             <div className="mt-6 border-t border-line pt-4">
               {showQr ? (
                 <div className="flex flex-col items-center gap-3 rise">
-                  <QrDisplay data={url} size={200} />
+                  <QrDisplay code={card.code} label={url} size={200} />
                   <p className="code text-muted">{url}</p>
                   <CopyButton text={url} />
                 </div>
               ) : (
                 <button type="button" className="btn btn-ghost w-full" onClick={() => setShowQr(true)}>
-                  Show QR code
+                  {t('qr.show')}
                 </button>
               )}
             </div>
           </div>
         </div>
-        <p className="mt-6 text-center text-xs text-muted">Powered by QR-VCard</p>
+        <p className="mt-6 text-center text-xs text-muted">
+          <Link to="/">{t('scan.poweredBy')}</Link>
+        </p>
       </div>
     </main>
   );

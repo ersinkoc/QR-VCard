@@ -1,7 +1,7 @@
 import { Route, Routes } from 'react-router-dom';
 import HomePage from './pages/HomePage';
+import PanelPage from './pages/panel/PanelPage';
 import ScanPage from './pages/ScanPage';
-import PanelPage from './pages/PanelPage';
 
 export default function App() {
   return (
@@ -9,7 +9,8 @@ export default function App() {
       <Route path="/" element={<HomePage />} />
       {/* The short URL encoded in every QR code: /c/<code> */}
       <Route path="/c/:code" element={<ScanPage />} />
-      <Route path="/panel" element={<PanelPage />} />
+      {/* /panel (cards), /panel/users (admins), /panel/account */}
+      <Route path="/panel/*" element={<PanelPage />} />
       <Route path="*" element={<HomePage />} />
     </Routes>
   );

@@ -11,6 +11,7 @@
   --color-line: oklch(92% 0.004 260);
   /* Error text keeps AA contrast on both schemes, so the token adapts. */
   --color-danger: oklch(55% 0.2 27);
+  --color-success: oklch(52% 0.13 155);
 
   --radius-lg: 0.5rem;
   --radius-xl: 0.665rem;
@@ -31,6 +32,7 @@
     --color-accent-contrast: oklch(18% 0.01 260);
     --color-line: oklch(30% 0.012 260);
     --color-danger: oklch(72% 0.16 22);
+    --color-success: oklch(75% 0.13 155);
   }
 }
 
@@ -84,10 +86,45 @@
     @apply bg-surface text-fg border border-line hover:bg-fg/8;
   }
   .btn-ghost {
-    @apply text-fg hover:bg-fg/5;
+    @apply text-fg hover:bg-fg/5 disabled:opacity-50;
+  }
+  .btn-danger {
+    @apply bg-danger text-accent-contrast hover:brightness-110 disabled:opacity-50;
+  }
+  /* Compact variant for dense rows; still 36px tall for touch. */
+  .btn-sm {
+    @apply h-9 px-3 text-[13px];
+  }
+  .btn:disabled {
+    cursor: not-allowed;
   }
   .input {
     @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg outline-none focus:ring-2 focus:ring-accent/40;
+  }
+  .input[aria-invalid='true'] {
+    border-color: var(--color-danger);
+  }
+  .input:disabled,
+  .input[readonly] {
+    @apply opacity-70;
+  }
+  .badge {
+    @apply inline-flex shrink-0 items-center rounded-full border border-line px-2 py-0.5 text-[11px] leading-4 font-medium text-muted;
+  }
+  .badge-success {
+    color: var(--color-success);
+    border-color: color-mix(in oklab, var(--color-success) 35%, transparent);
+    background: color-mix(in oklab, var(--color-success) 10%, transparent);
+  }
+  .badge-danger {
+    color: var(--color-danger);
+    border-color: color-mix(in oklab, var(--color-danger) 35%, transparent);
+    background: color-mix(in oklab, var(--color-danger) 10%, transparent);
+  }
+  .badge-accent {
+    color: var(--color-accent);
+    border-color: color-mix(in oklab, var(--color-accent) 35%, transparent);
+    background: color-mix(in oklab, var(--color-accent) 10%, transparent);
   }
   .label {
     @apply mb-1 block text-sm font-medium text-fg;

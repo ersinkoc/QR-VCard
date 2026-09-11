@@ -1,48 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { qrUrl } from '../lib/qr';
+import { useI18n } from '../i18n';
+import { qrImageUrl } from '../lib/qr';
 
-export default function QrDisplay({ data, size = 240, className }: { data: string; size?: number; className?: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+/**
+ * The QR for a card's short link. `label` is the link it encodes (shown and read
+ * out); the image itself comes from the same-origin /api/qr/<code>.
+ */
+export default function QrDisplay({ code, label, size = 240, className }: { code: string; label: string; size?: number; className?: string }) {
+  const { t } = useI18n();
+  const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [attempt, setAttempt] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const src = `${qrImageUrl(code)}${attempt ? `?retry=${attempt}` : ''}`;
 
   useEffect(() => {
-    let alive = true;
-    let objectUrl: string | null = null;
-    setSrc(null);
-    setError(null);
-    // Different data means the enlarged view would be showing the old code.
+    setState('loading');
     setExpanded(false);
-    qrUrl(data)
-      .then((u) => {
-        if (!alive) {
-          if (u.startsWith('blob:')) URL.revokeObjectURL(u);
-          return;
-        }
-        objectUrl = u;
-        setSrc(u);
-      })
-      .catch((err) => {
-        // Keep the reason rather than a bare failure. Every message qrUrl()
-        // can raise names the layer that broke — a 403 from the proxy's origin
-        // allowlist, an HTML shell answering /api/qr because no route proxies
-        // it, a provider 500 — and that line is what fixes the deployment.
-        if (alive) setError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      alive = false;
-      // qrUrl() hands back a blob: URL for the provider's PNG bytes; release it
-      // when this card is unmounted or the data changes, or every render leaks
-      // one image.
-      if (objectUrl?.startsWith('blob:')) URL.revokeObjectURL(objectUrl);
-    };
-  }, [data]);
+  }, [code, attempt]);
 
-  // Enlarged view behaviour: Escape closes, Tab stays inside, the page behind
-  // cannot scroll, and focus returns to the thumbnail that opened it.
+  // Enlarged view: Escape closes, Tab stays inside, the page behind cannot
+  // scroll, and focus returns to the thumbnail that opened it.
   useEffect(() => {
     if (!expanded) return;
     const trigger = triggerRef.current;
@@ -50,76 +30,79 @@ export default function QrDisplay({ data, size = 240, className }: { data: strin
 
     function onKeyDown(ev: KeyboardEvent) {
       if (ev.key === 'Escape') {
+        // Stop here: an enclosing dialog would otherwise close on the same key.
+        ev.stopImmediatePropagation();
         setExpanded(false);
         return;
       }
-      // One control in here, so Tab has nowhere legitimate to go: without this
-      // it would reach the page behind an aria-modal overlay.
       if (ev.key === 'Tab') {
         ev.preventDefault();
         closeRef.current?.focus();
       }
     }
 
-    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keydown', onKeyDown, true);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-
     return () => {
-      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keydown', onKeyDown, true);
       document.body.style.overflow = previousOverflow;
       if (trigger?.isConnected) trigger.focus();
     };
   }, [expanded]);
 
-  if (error) {
+  if (state === 'failed') {
     return (
-      <div className={className}>
-        <p className="text-sm text-danger">QR generation failed.</p>
-        <p className="mt-1 break-words text-sm text-muted">{error}</p>
+      <div className={`flex flex-col items-center justify-center gap-2 rounded-lg border border-line p-4 text-center ${className ?? ''}`} style={{ width: size, height: size }}>
+        <p className="text-sm text-danger">{t('qr.failed')}</p>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAttempt((n) => n + 1)}>
+          {t('common.retry')}
+        </button>
       </div>
     );
   }
 
   return (
     <div className={className}>
-      {src ? (
-        <button
-          ref={triggerRef}
-          type="button"
-          aria-label={`Enlarge QR code for ${data}`}
-          onClick={() => setExpanded(true)}
-          className="block cursor-zoom-in rounded-lg focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
-        >
-          <img src={src} width={size} height={size} alt="" className="block rounded-lg border border-line bg-white p-2" />
-        </button>
-      ) : (
-        <div style={{ width: size, height: size }} className="animate-pulse rounded-lg border border-line bg-surface" />
-      )}
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={t('qr.enlarge')}
+        disabled={state !== 'ready'}
+        onClick={() => setExpanded(true)}
+        className="relative block cursor-zoom-in rounded-lg focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+        style={{ width: size, height: size }}
+      >
+        {state === 'loading' && <span className="absolute inset-0 animate-pulse rounded-lg border border-line bg-surface" />}
+        <img
+          key={src}
+          src={src}
+          width={size}
+          height={size}
+          alt={t('qr.dialog', { url: label })}
+          onLoad={() => setState('ready')}
+          onError={() => setState('failed')}
+          className={`block rounded-lg border border-line bg-white p-2 transition-opacity ${state === 'ready' ? 'opacity-100' : 'opacity-0'}`}
+        />
+      </button>
 
-      {/*
-        Fullscreen means "as large as the viewport allows", which is an overlay
-        rather than the Fullscreen API: iOS Safari refuses requestFullscreen()
-        on anything but a <video>, and an overlay also keeps the page, its
-        history and its scroll position untouched.
-      */}
+      {/* An overlay rather than the Fullscreen API: iOS Safari refuses
+          requestFullscreen() on anything but a <video>. */}
       {expanded &&
-        src &&
         createPortal(
           <div
             role="dialog"
             aria-modal="true"
-            aria-label={`QR code for ${data}`}
+            aria-label={t('qr.dialog', { url: label })}
             onClick={() => setExpanded(false)}
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
           >
             <div className="flex max-h-full flex-col items-center gap-4" onClick={(ev) => ev.stopPropagation()}>
-              {/* Sized by the viewport, not by the thumbnail's `size` prop: the
-                  provider returns a 1000 px PNG, so it stays sharp enlarged. */}
+              {/* The provider renders 1000 px, so it stays sharp enlarged. */}
               <img src={src} alt="" className="max-h-[75vh] max-w-[88vw] rounded-xl border border-line bg-white p-3" />
-              <p className="code max-w-[88vw] truncate text-white/90">{data}</p>
+              <p className="code max-w-[88vw] truncate text-white/90">{label}</p>
               <button ref={closeRef} type="button" className="btn btn-secondary" onClick={() => setExpanded(false)}>
-                Close
+                {t('common.close')}
               </button>
             </div>
           </div>,

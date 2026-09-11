@@ -1,38 +1,36 @@
 #!/usr/bin/env node
 /**
- * App server on a single port: the built SPA and the QR proxy in one process.
+ * App server on a single port: the built SPA, the app API and the QR proxy.
  *
- * This is the simple deployment — nothing else to run and no reverse-proxy route for
- * /api/qr to get wrong, because the same server answers it. Directus is still called
- * by the browser directly, so point the build at it (VITE_DIRECTUS_URL) and allow this
- * app's origin in Directus.
+ *   npm run build          # produces dist/ (no Directus URL is baked in)
+ *   npm run start          # http://localhost:8080, reads the root .env
  *
- *   npm run build          # produces dist/ (reads VITE_DIRECTUS_URL from .env)
- *   npm run start          # http://localhost:8080
+ * The browser only ever talks to this server. Card and user data go through
+ * /api/* (server/api.mjs), which authorises every request and then calls Directus
+ * with the service token — Directus is configured purely by runtime environment.
  *
- * Static answers carry baseline security headers (nosniff, same-origin framing,
- * referrer policy, HSTS) and are gzipped when the client accepts gzip — platform
- * proxies do not always compress, and QR landing pages are opened on phones.
+ * Static answers carry security headers (CSP, nosniff, same-origin framing,
+ * referrer policy, HSTS) and are gzipped when the client accepts gzip.
  *
  * Environment:
- *   PORT        optional  listen port, default 8080
- *   DIST_DIR    optional  directory to serve, default ./dist
- *   QR_API_KEY  required  provider key, attached server-side (never sent to the client)
- *   QR_API_URL  optional  provider base, default https://artqrcode.oxog.net
- *   QR_RATE_LIMIT_MAX          optional  POST /api/qr cap per client per window, default 30
- *   QR_RATE_LIMIT_WINDOW_MS    optional  rate window, default 60000
- *   QR_TRUST_PROXY             optional  1 = rate-limit per real client behind a reverse
- *                                        proxy (last X-Forwarded-For hop) instead of per
- *                                        proxy socket address
- *
- * VITE_DIRECTUS_URL is a BUILD-time value: Vite inlines it into the bundle, so changing
- * which Directus the app talks to means rebuilding (or passing --build-arg in Docker).
+ *   DIRECTUS_URL     required  Directus base URL (server-to-server; never sent to the browser)
+ *   DIRECTUS_TOKEN   required  static token of the service account (npm run directus:bootstrap)
+ *   SESSION_SECRET   optional  cookie signing key (>= 16 chars); derived from the token if unset
+ *   TRUST_PROXY      optional  1 behind a reverse proxy: rate limits key on the last
+ *                              X-Forwarded-For hop (QR_TRUST_PROXY is honoured too)
+ *   COOKIE_SECURE    optional  1 forces the Secure cookie flag (auto on https / X-Forwarded-Proto)
+ *   MAX_CARDS_PER_USER optional cards a plain user may own, default 20
+ *   PORT             optional  listen port, default 8080
+ *   DIST_DIR         optional  directory to serve, default ./dist
+ *   QR_API_KEY       required  QR provider key, attached server-side
+ *   QR_API_URL, QR_RATE_LIMIT_MAX, QR_RATE_LIMIT_WINDOW_MS — see server/qr-handler.mjs
  */
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { apiConfigFromEnv, createApiHandler } from './api.mjs';
 import { createQrHandler, qrConfigFromEnv } from './qr-handler.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -68,6 +66,12 @@ const SECURITY_HEADERS = {
   'X-Frame-Options': 'SAMEORIGIN',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Strict-Transport-Security': 'max-age=31536000',
+  // Everything the app loads is same-origin now (API, QR, photos); blob: carries
+  // generated QR images. Inline styles stay allowed for per-card accent colours.
+  'Content-Security-Policy':
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; " +
+    "connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; " +
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
 };
 
 /** Extensions worth compressing; everything else (png/jpg/woff2) is already dense. */
@@ -79,6 +83,8 @@ function acceptsGzip(req) {
 }
 
 const qr = createQrHandler(qrConfigFromEnv());
+const apiConfig = apiConfigFromEnv();
+const api = createApiHandler(apiConfig);
 
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
@@ -121,7 +127,8 @@ async function sendFile(req, res, filePath, pathname) {
 
 const server = createServer(async (req, res) => {
   try {
-    // The QR endpoint and /healthz are answered in-process.
+    // The app API, then the QR endpoint and /healthz, are answered in-process.
+    if (await api.handle(req, res)) return;
     if (await qr.handle(req, res)) return;
 
     let pathname;
@@ -174,8 +181,24 @@ const server = createServer(async (req, res) => {
   }
 });
 
+server.on('error', (err) => {
+  // One readable line instead of an unhandled-error stack (which `npm run api`'s
+  // --watch would otherwise repeat on every restart).
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[app] port ${PORT} is already in use — stop the other process or set PORT`);
+    process.exitCode = 1;
+    return;
+  }
+  throw err;
+});
+
 server.listen(PORT, () => {
   console.log(`[app] serving ${DIST} on http://localhost:${PORT}`);
+  console.log(
+    api.configured
+      ? `[app] API: /api/* -> Directus ${apiConfig.directusUrl}${apiConfig.derivedSecret ? ' (session key derived from DIRECTUS_TOKEN — set SESSION_SECRET to decouple)' : ''}`
+      : '[app] API: NOT CONFIGURED — set DIRECTUS_URL and DIRECTUS_TOKEN (npm run directus:bootstrap writes them); /api/* answers 503',
+  );
   console.log(
     `[app] QR endpoint: POST /api/qr -> ${qr.provider} (key ${qr.keyConfigured ? 'configured' : 'MISSING — POST will fail with 500'}, rate ${qr.rateMax}/${Math.round(qr.rateWindowMs / 1000)}s${qr.trustProxy ? '' : ', socket-keyed — set QR_TRUST_PROXY=1 behind a reverse proxy'})`,
   );

@@ -11,7 +11,7 @@
  *      for a broken provider once already.
  *
  * The provider's own CORS headers are reported but not checked: the browser
- * never calls the provider (it calls server/qr-proxy.mjs, which is
+ * never calls the provider (it calls the app server, which is
  * server-to-server), so a missing Allow-Methods/Allow-Headers cannot break the
  * app. They appear as INFO lines instead of failures.
  *
@@ -223,7 +223,7 @@ async function main() {
   console.log(`      access-control-allow-origin:  ${pf.allowOrigin ?? '(absent)'}`);
   console.log(`      access-control-allow-methods: ${pf.allowMethods ?? '(absent)'}`);
   console.log(`      access-control-allow-headers: ${pf.allowHeaders ?? '(absent)'}`);
-  info('provider CORS is not a blocker here', 'the browser calls server/qr-proxy.mjs, which calls the provider server-to-server');
+  info('provider CORS is not a blocker here', 'the browser calls the app server (GET /api/qr/<code>), which calls the provider server-to-server');
 }
 
 main()

@@ -1,420 +1,180 @@
-import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { createQrHandler, qrConfigFromEnv } from './qr-handler.mjs';
+import { createQrHandler, qrBody, qrConfigFromEnv, requestOrigin } from './qr-handler.mjs';
 
-/**
- * The origin gate is the part of the proxy that is easiest to get wrong and hardest
- * to notice: a browser sends `Origin` on every POST, even same-origin, and a wrong
- * answer here shows up as "QR generation failed." in the app while curl looks fine.
- * These cases run without a network — the provider is never called.
- */
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+
 function makeRes() {
   return {
     status: 0,
     headers: {},
-    /** String chunks (JSON replies). */
-    text: '',
-    /** Buffer chunks (image bytes) — kept apart so a PNG never goes through utf8. */
-    chunks: [],
-    headersSent: false,
-    writeHead(status, headers) {
+    body: Buffer.alloc(0),
+    writeHead(status, headers = {}) {
       this.status = status;
-      this.headers = headers ?? {};
-      this.headersSent = true;
-      return this;
+      this.headers = headers;
     },
     end(chunk) {
-      if (chunk !== undefined) {
-        if (Buffer.isBuffer(chunk)) this.chunks.push(chunk);
-        else this.text += chunk.toString();
-      }
-      return this;
+      if (chunk !== undefined) this.body = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
     },
     json() {
-      return this.text ? JSON.parse(this.text) : null;
-    },
-    bytes() {
-      return Buffer.concat(this.chunks);
+      return JSON.parse(this.body.toString('utf8'));
     },
   };
 }
 
-function makeReq({ method = 'GET', url = '/', headers = {}, body } = {}) {
-  const req = new EventEmitter();
-  req.method = method;
-  req.url = url;
-  req.headers = headers;
-  if (body !== undefined) {
-    queueMicrotask(() => {
-      req.emit('data', Buffer.from(body));
-      req.emit('end');
-    });
-  }
-  return req;
+function makeReq({ method = 'GET', url = '/', headers = {}, socket = { remoteAddress: '10.0.0.1' } } = {}) {
+  return { method, url, headers: { host: 'cards.example.com', ...headers }, socket };
 }
 
-/** Keyless config, so an allowed request stops at the key check instead of the network. */
-function handler(overrides = {}) {
-  return createQrHandler({
-    provider: 'https://provider.test',
-    key: '',
-    allowedOrigins: ['http://localhost:5173'],
-    ...overrides,
-  });
+function providerOk() {
+  return vi.fn(async () => new Response(PNG, { status: 200, headers: { 'Content-Type': 'image/png' } }));
+}
+
+function setup(overrides = {}, fetchImpl = providerOk()) {
+  const h = createQrHandler(
+    { provider: 'https://provider.test', key: 'secret-key', publicUrl: '', rateMax: 30, rateWindowMs: 60_000, trustProxy: false, ...overrides },
+    { fetchImpl, log: {} },
+  );
+  const get = async (url, headers) => {
+    const res = makeRes();
+    const handled = await h.handle(makeReq({ url, headers }), res);
+    return { handled, res };
+  };
+  return { h, fetchImpl, get };
 }
 
 describe('qrConfigFromEnv', () => {
-  it('applies the documented defaults and trims the key', () => {
-    const config = qrConfigFromEnv({ QR_API_KEY: '  abc  ' });
-
-    expect(config.provider).toBe('https://artqrcode.oxog.net');
-    expect(config.key).toBe('abc');
-    expect(config.allowedOrigins).toEqual(['http://localhost:5173']);
+  it('applies defaults, trims the key and reads PUBLIC_URL', () => {
+    const c = qrConfigFromEnv({ QR_API_KEY: '  abc ', PUBLIC_URL: 'https://cards.example.com/' });
+    expect(c).toMatchObject({ provider: 'https://artqrcode.oxog.net', key: 'abc', publicUrl: 'https://cards.example.com', rateMax: 30, rateWindowMs: 60_000 });
   });
 
-  it('strips trailing slashes from the provider and splits the origin list', () => {
-    const config = qrConfigFromEnv({
-      QR_API_URL: 'https://provider.test///',
-      QR_ALLOWED_ORIGINS: 'https://a.example.com, https://b.example.com ,',
-    });
-
-    expect(config.provider).toBe('https://provider.test');
-    expect(config.allowedOrigins).toEqual(['https://a.example.com', 'https://b.example.com']);
-  });
-
-  it('reads the rate limit env with sane fallbacks', () => {
-    expect(qrConfigFromEnv({})).toMatchObject({ rateMax: 30, rateWindowMs: 60_000 });
-    expect(
-      qrConfigFromEnv({ QR_RATE_LIMIT_MAX: '10', QR_RATE_LIMIT_WINDOW_MS: '5000' }),
-    ).toMatchObject({ rateMax: 10, rateWindowMs: 5000 });
-    // Invalid values fall back to the defaults: the limit never turns itself off.
+  it('never turns the rate limit off with a bad value', () => {
     expect(qrConfigFromEnv({ QR_RATE_LIMIT_MAX: '0' }).rateMax).toBe(30);
-    expect(qrConfigFromEnv({ QR_RATE_LIMIT_MAX: '-3' }).rateMax).toBe(30);
-    expect(qrConfigFromEnv({ QR_RATE_LIMIT_MAX: 'many' }).rateMax).toBe(30);
-    expect(qrConfigFromEnv({ QR_RATE_LIMIT_WINDOW_MS: 'nope' }).rateWindowMs).toBe(60_000);
-    // Trusted-proxy keying is strictly opt-in: the exact value '1'.
+    expect(qrConfigFromEnv({ QR_RATE_LIMIT_WINDOW_MS: 'x' }).rateWindowMs).toBe(60_000);
+    expect(qrConfigFromEnv({ TRUST_PROXY: '1' }).trustProxy).toBe(true);
     expect(qrConfigFromEnv({ QR_TRUST_PROXY: '1' }).trustProxy).toBe(true);
-    expect(qrConfigFromEnv({ QR_TRUST_PROXY: 'true' }).trustProxy).toBe(false);
-    expect(qrConfigFromEnv({}).trustProxy).toBe(false);
   });
 });
 
-describe('the origin gate', () => {
-  it('allows a same-origin Origin, whatever port the app is served on', async () => {
-    const res = makeRes();
-    const handled = await handler().handle(
-      makeReq({ method: 'POST', url: '/api/qr', headers: { origin: 'http://localhost:4173', host: 'localhost:4173' } }),
-      res,
-    );
-
-    expect(handled).toBe(true);
-    // Past the gate: no key configured, so it stops at the key check, not at 403.
-    expect(res.status).toBe(500);
-    expect(res.json().error).toMatch(/QR_API_KEY/);
-  });
-
-  it('allows a same-origin Origin whose host carries the default port', async () => {
-    const res = makeRes();
-    await handler().handle(
-      makeReq({ method: 'POST', url: '/api/qr', headers: { origin: 'https://cards.example.com', host: 'cards.example.com:443' } }),
-      res,
-    );
-
-    expect(res.status).toBe(500);
-  });
-
-  it("honours a reverse proxy's X-Forwarded-Host, which is the name the browser used", async () => {
-    const res = makeRes();
-    await handler().handle(
-      makeReq({
-        method: 'POST',
-        url: '/api/qr',
-        headers: { origin: 'https://cards.example.com', host: '127.0.0.1:8080', 'x-forwarded-host': 'cards.example.com' },
-      }),
-      res,
-    );
-
-    expect(res.status).toBe(500);
-  });
-
-  it('refuses a browser page on another origin, naming it', async () => {
-    const res = makeRes();
-    const handled = await handler().handle(
-      makeReq({ method: 'POST', url: '/api/qr', headers: { origin: 'https://evil.example', host: 'cards.example.com' } }),
-      res,
-    );
-
-    expect(handled).toBe(true);
-    expect(res.status).toBe(403);
-    expect(res.json().error).toContain('https://evil.example');
-  });
-
-  it('still honours an explicitly listed cross-origin caller', async () => {
-    const res = makeRes();
-    await handler().handle(
-      makeReq({ method: 'POST', url: '/api/qr', headers: { origin: 'http://localhost:5173', host: 'cards.example.com' } }),
-      res,
-    );
-
-    expect(res.status).toBe(500);
-  });
-
-  it('treats a request without an Origin as a non-browser caller', async () => {
-    const res = makeRes();
-    await handler().handle(makeReq({ method: 'POST', url: '/api/qr', headers: { host: 'cards.example.com' } }), res);
-
-    expect(res.status).toBe(500);
-  });
-
-  it('answers a preflight without reaching the provider', async () => {
-    const res = makeRes();
-    await handler().handle(
-      makeReq({ method: 'OPTIONS', url: '/api/qr', headers: { origin: 'https://evil.example', host: 'cards.example.com' } }),
-      res,
-    );
-
-    expect(res.status).toBe(403);
+describe('qrBody', () => {
+  it('is the COMPLETE body the provider requires (a partial one gets a bare 500)', () => {
+    const body = qrBody('https://host/c/abc');
+    expect(body).toMatchObject({ inputText: 'https://host/c/abc', exportWidth: 1000, exportPNG: true, eccLevel: 'H', shapeName: 'One' });
+    expect(body.colorParameters).toMatchObject({ premiumFiveFirst: '000000', premiumCrossFourth: '888888', background: 'ffffff', useRandomColors: false });
+    expect(body.eyeParameters).toMatchObject({ eyeFrameType: 'Square', eyeBallType: 'Circle', randomEyeFrame: false });
+    expect(body.gradientParameters).toMatchObject({ linearGradient: false, gradientColorFirstHex: 'ff0000' });
+    expect(body.logoParameters).toMatchObject({ logoName: 'empty', logoBackgroundColorHexFormat: '' });
+    expect(body.premiumParameters).toMatchObject({ five: true, cross: true, vertical: true });
   });
 });
 
-describe('the provider call', () => {
-  it('attaches the key, forwards the body verbatim and passes the answer back', async () => {
-    const png = Buffer.from('89504e470d0a1a0a', 'hex');
-    const fetchMock = vi.fn(async (_url, init) => {
-      expect(init.headers.ApiKey).toBe('secret-key');
-      expect(JSON.parse(init.body)).toEqual({ inputText: 'https://app.example.com/c/abc' });
-      return new Response(png, { status: 200, headers: { 'Content-Type': 'image/png' } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    try {
-      const res = makeRes();
-      const body = JSON.stringify({ inputText: 'https://app.example.com/c/abc' });
-      await handler({ key: 'secret-key' }).handle(
-        makeReq({
-          method: 'POST',
-          url: '/api/qr',
-          headers: { origin: 'https://cards.example.com', host: 'cards.example.com', 'content-type': 'application/json' },
-          body,
-        }),
-        res,
-      );
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fetchMock.mock.calls[0][0]).toBe('https://provider.test/QR/create');
-      expect(res.status).toBe(200);
-      expect(res.headers['Content-Type']).toBe('image/png');
-      expect(res.bytes().equals(png)).toBe(true);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+describe('requestOrigin', () => {
+  it('uses the forwarded host and scheme of a reverse proxy', () => {
+    expect(requestOrigin(makeReq({ headers: { host: '127.0.0.1:8080', 'x-forwarded-host': 'Cards.Example.com', 'x-forwarded-proto': 'https' } }))).toBe('https://cards.example.com');
+    expect(requestOrigin(makeReq({ headers: { host: 'localhost:5173' } }))).toBe('http://localhost:5173');
   });
 
-  it('rejects a body that is not JSON', async () => {
-    const res = makeRes();
-    await handler({ key: 'secret-key' }).handle(
-      makeReq({
-        method: 'POST',
-        url: '/api/qr',
-        headers: { origin: 'https://cards.example.com', host: 'cards.example.com' },
-        body: 'not json',
-      }),
-      res,
-    );
+  it('refuses a Host that is not a host', () => {
+    expect(requestOrigin(makeReq({ headers: { host: 'evil.com/path?x' } }))).toBeNull();
+  });
+});
 
-    expect(res.status).toBe(400);
+describe('GET /api/qr/:code', () => {
+  it('encodes the site’s own short link, with the key attached server-side', async () => {
+    const { get, fetchImpl } = setup();
+    const { res } = await get('/api/qr/abc123', { 'x-forwarded-proto': 'https' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/png');
+    expect(res.headers['Cache-Control']).toMatch(/max-age=86400/);
+    expect(res.body.equals(PNG)).toBe(true);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://provider.test/QR/create');
+    expect(init.headers.ApiKey).toBe('secret-key');
+    expect(JSON.parse(init.body).inputText).toBe('https://cards.example.com/c/abc123');
+  });
+
+  it('prefers PUBLIC_URL over the request host', async () => {
+    const { get, fetchImpl } = setup({ publicUrl: 'https://kart.example.com' });
+    await get('/api/qr/abc', { host: 'internal:8080' });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).inputText).toBe('https://kart.example.com/c/abc');
+  });
+
+  it('serves repeats from the cache — one provider call per link', async () => {
+    const { get, fetchImpl } = setup();
+    await get('/api/qr/abc');
+    await get('/api/qr/abc');
+    await Promise.all([get('/api/qr/xyz'), get('/api/qr/xyz')]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('keys the cache on the full link, so a forged Host cannot poison it', async () => {
+    const { get, fetchImpl } = setup();
+    await get('/api/qr/abc', { host: 'evil.example' });
+    await get('/api/qr/abc');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).inputText).toBe('http://cards.example.com/c/abc');
+  });
+
+  it('offers a download variant', async () => {
+    const { res } = await setup().get('/api/qr/abc?download=1');
+    expect(res.headers['Content-Disposition']).toBe('attachment; filename="qr-abc.png"');
+  });
+
+  it('refuses anything that is not a short code, without calling the provider', async () => {
+    const { get, fetchImpl } = setup();
+    expect((await get('/api/qr/')).res.status).toBe(404);
+    expect((await get('/api/qr/has%20space')).res.status).toBe(404);
+    expect((await get('/api/qr/a/b')).res.status).toBe(404);
+    expect((await get('/api/qr/%E0%A4%A')).res.status).toBe(404);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('only answers GET — there is no free-form POST any more', async () => {
+    const { h, fetchImpl } = setup();
+    const res = makeRes();
+    await h.handle(makeReq({ method: 'POST', url: '/api/qr' }), res);
+    expect(res.status).toBe(405);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 without a key and 502 when the provider fails', async () => {
+    expect((await setup({ key: '' }).get('/api/qr/abc')).res.status).toBe(503);
+    const failing = vi.fn(async () => new Response(null, { status: 500 }));
+    const { res } = await setup({}, failing).get('/api/qr/abc');
+    expect(res.status).toBe(502);
+    expect(res.json().error.code).toBe('QR_UPSTREAM');
+  });
+
+  it('rate-limits cache misses per client, with Retry-After', async () => {
+    const { get } = setup({ rateMax: 2 });
+    await get('/api/qr/a1');
+    await get('/api/qr/a2');
+    const third = await get('/api/qr/a3');
+    expect(third.res.status).toBe(429);
+    expect(third.res.headers['Retry-After']).toBeDefined();
+    // A cached image costs nothing and is never limited.
+    expect((await get('/api/qr/a1')).res.status).toBe(200);
+  });
+
+  it('keys the limit on the last X-Forwarded-For hop only behind a trusted proxy', async () => {
+    const { get } = setup({ rateMax: 1, trustProxy: true });
+    await get('/api/qr/b1', { 'x-forwarded-for': '203.0.113.7' });
+    expect((await get('/api/qr/b2', { 'x-forwarded-for': '203.0.113.8' })).res.status).toBe(200);
+    expect((await get('/api/qr/b3', { 'x-forwarded-for': '9.9.9.9, 203.0.113.7' })).res.status).toBe(429);
   });
 });
 
 describe('everything else', () => {
   it('answers /healthz without exposing the key', async () => {
-    const res = makeRes();
-    const handled = await handler().handle(makeReq({ method: 'GET', url: '/healthz' }), res);
-
+    const { handled, res } = await setup().get('/healthz');
     expect(handled).toBe(true);
-    expect(res.status).toBe(200);
-    expect(res.json()).toEqual({ ok: true, provider: 'https://provider.test', keyConfigured: false });
-    expect(res.text).not.toMatch(/QR_API_KEY=/);
+    expect(res.json()).toEqual({ ok: true, provider: 'https://provider.test', keyConfigured: true });
+    expect(res.body.toString()).not.toContain('secret-key');
   });
 
   it('leaves paths it does not own to the caller', async () => {
-    const res = makeRes();
-    const handled = await handler().handle(makeReq({ method: 'GET', url: '/c/abc' }), res);
-
-    expect(handled).toBe(false);
-    expect(res.headersSent).toBe(false);
-  });
-});
-
-describe('the rate limit', () => {
-  /**
-   * The limiter reads Date.now() for its fixed windows, so tests pin the clock
-   * and advance it explicitly instead of sleeping.
-   */
-  function pinClock(at) {
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(at);
-    return (ms) => {
-      at += ms;
-      spy.mockReturnValue(at);
-    };
-  }
-
-  /** Fires one POST from 203.0.113.7 and resolves with the captured response. */
-  function fire(h, extraHeaders = {}) {
-    const res = makeRes();
-    return h
-      .handle(
-        makeReq({
-          method: 'POST',
-          url: '/api/qr',
-          headers: { host: 'cards.example.com', 'x-forwarded-for': '203.0.113.7', ...extraHeaders },
-        }),
-        res,
-      )
-      .then(() => res);
-  }
-
-  it('allows requests up to the cap, answers 429 beyond it and resets after the window', async () => {
-    const advance = pinClock(1_700_000_000_000);
-    try {
-      const h = handler({ rateMax: 2, rateWindowMs: 60_000, trustProxy: true });
-
-      expect((await fire(h)).status).toBe(500); // under the cap: stops at the key check
-      expect((await fire(h)).status).toBe(500);
-      const third = await fire(h);
-      expect(third.status).toBe(429);
-      expect(third.headers['Retry-After']).toBe('60');
-      expect(third.json().error).toMatch(/rate limit exceeded/);
-
-      advance(60_001);
-      expect((await fire(h)).status).toBe(500); // fresh window: the client counts from zero
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('keeps the CORS headers on the 429 so the browser sees the refusal', async () => {
-    pinClock(1_700_000_000_000);
-    try {
-      const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
-      await fire(h); // the cap: one allowed request
-      const second = await fire(h, { origin: 'http://localhost:5173' });
-
-      expect(second.status).toBe(429);
-      expect(second.headers['Access-Control-Allow-Origin']).toBe('http://localhost:5173');
-      expect(second.headers.Vary).toBe('Origin');
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('gives every client its own bucket', async () => {
-    pinClock(1_700_000_000_000);
-    try {
-      const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
-      await fire(h); // exhausts 203.0.113.7
-
-      const other = makeRes();
-      await h.handle(
-        makeReq({
-          method: 'POST',
-          url: '/api/qr',
-          headers: { host: 'cards.example.com', 'x-forwarded-for': '203.0.113.8' },
-        }),
-        other,
-      );
-
-      expect(other.status).toBe(500); // a different client is not affected
-
-      // The key is the LAST hop (the one the edge appended), not the client's first.
-      const spoofed = makeRes();
-      await h.handle(
-        makeReq({
-          method: 'POST',
-          url: '/api/qr',
-          headers: { host: 'cards.example.com', 'x-forwarded-for': '9.9.9.9, 203.0.113.7' },
-        }),
-        spoofed,
-      );
-      expect(spoofed.status).toBe(429); // same bucket as 203.0.113.7 despite the forged first hop
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('never spends budget on the OPTIONS preflight or /healthz', async () => {
-    pinClock(1_700_000_000_000);
-    try {
-      const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
-      await fire(h, { 'x-forwarded-for': '198.51.100.4' }); // cap reached for that client
-      expect((await fire(h, { 'x-forwarded-for': '198.51.100.4' })).status).toBe(429);
-
-      const preflight = makeRes();
-      await h.handle(
-        makeReq({
-          method: 'OPTIONS',
-          url: '/api/qr',
-          headers: { origin: 'http://localhost:5173', host: 'cards.example.com', 'x-forwarded-for': '198.51.100.4' },
-        }),
-        preflight,
-      );
-      expect(preflight.status).toBe(204);
-
-      const health = makeRes();
-      await h.handle(
-        makeReq({ method: 'GET', url: '/healthz', headers: { 'x-forwarded-for': '198.51.100.4' } }),
-        health,
-      );
-      expect(health.status).toBe(200);
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('defaults to the socket address, so rotating X-Forwarded-For does not mint budget', async () => {
-    const h = handler({ rateMax: 1, rateWindowMs: 60_000 });
-
-    const request = (xff) => {
-      const req = makeReq({
-        method: 'POST',
-        url: '/api/qr',
-        headers: { host: 'cards.example.com', 'x-forwarded-for': xff },
-      });
-      req.socket = { remoteAddress: '10.0.0.9' };
-      const res = makeRes();
-      return h.handle(req, res).then(() => res);
-    };
-
-    expect((await request('203.0.113.1')).status).toBe(500); // allowed, socket-keyed
-    const rotated = await request('203.0.113.2'); // a different forged header, same socket
-    expect(rotated.status).toBe(429); // still the same bucket: rotation buys nothing
-  });
-
-  it('does not spend budget on a CORS-rejected request', async () => {
-    const h = handler({ rateMax: 1, rateWindowMs: 60_000, trustProxy: true });
-
-    // Refused at the CORS gate, before the limiter ever sees the client.
-    const refused = makeRes();
-    await h.handle(
-      makeReq({
-        method: 'POST',
-        url: '/api/qr',
-        headers: { origin: 'https://evil.example', host: 'cards.example.com', 'x-forwarded-for': '203.0.113.9' },
-      }),
-      refused,
-    );
-    expect(refused.status).toBe(403);
-
-    // The 403 bought no budget: this client still has its full allowance.
-    const allowed = makeRes();
-    await h.handle(
-      makeReq({
-        method: 'POST',
-        url: '/api/qr',
-        headers: { host: 'cards.example.com', 'x-forwarded-for': '203.0.113.9' },
-      }),
-      allowed,
-    );
-    expect(allowed.status).toBe(500); // stopped by the key check, not 429
+    expect((await setup().get('/c/abc')).handled).toBe(false);
+    expect((await setup().get('/api/qrx')).handled).toBe(false);
   });
 });

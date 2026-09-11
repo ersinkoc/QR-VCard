@@ -1,14 +1,9 @@
 # CI gate — the exact command sequence a deploy needs, on every push.
 #
-# The build inlines VITE_DIRECTUS_URL into the client bundle at build time, and
-# `npm run deploy:check` FAILS any bundle carrying the dev-default
-# localhost:8055. CI therefore injects the repository variable
-# VITE_DIRECTUS_URL when it exists (Settings → Secrets and variables → Actions
-# → Variables) and a deterministic placeholder when it does not — so the gate
-# always exercises the real pipeline mechanics, and starts validating the REAL
-# URL the moment the variable is set. A missing variable can never turn the
-# gate green-by-accident here: it would fail the platform build/deploy instead,
-# loudly.
+# Nothing environment-specific is baked into the bundle any more (Directus is
+# configured at runtime on the server), so the build needs no variables; the
+# deploy:check gate still fails any bundle that leaks a secret name or a
+# Directus URL.
 name: CI
 
 on: [push, pull_request]
@@ -20,8 +15,6 @@ concurrency:
 jobs:
   gate:
     runs-on: ubuntu-latest
-    env:
-      VITE_DIRECTUS_URL: ${{ vars.VITE_DIRECTUS_URL || 'https://directus.example.com' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

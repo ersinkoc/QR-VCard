@@ -2,27 +2,17 @@
 # Dockerfile, without a checked-in Dockerfile (Railway and Coolify run Nixpacks
 # from this file; locally: `nixpacks build . --name qr-vcard`).
 #
-# The start command runs server/serve.mjs: the built SPA from dist/, the QR
-# proxy (POST /api/qr) and GET /healthz all on one port.
+# The start command runs server/serve.mjs: the built SPA from dist/, the app API
+# (/api/*), the QR proxy (POST /api/qr) and GET /healthz, all on one port.
 #
-# Environment the deployment needs:
-#   VITE_DIRECTUS_URL  BUILD-time  the public Directus URL, inlined into the
-#                                  client bundle by Vite. Set it in the deploy
-#                                  platform's variables BEFORE the first build;
-#                                  changing it later triggers a rebuild with the
-#                                  new value. After a local build, prove what got
-#                                  inlined with `npm run deploy:check`.
-#   QR_API_KEY         RUN-time    QR provider key — read by server/serve.mjs
-#                                  only, never shipped to the browser.
-#   PORT               RUN-time    listen port, default 8080.
-#
-# Provision the REMOTE Directus once, with the admin token, from any machine
-# that can reach it (never from this app — the token must not ship anywhere):
-#   DIRECTUS_URL=https://directus.example.com DIRECTUS_ADMIN_TOKEN=<token> \
-#     npm run directus:bootstrap
-#   DIRECTUS_URL=https://directus.example.com DIRECTUS_ADMIN_TOKEN=<token> \
-#     npm run directus:verify
-# The remote instance must also allow the app's domain in CORS_ORIGIN.
+# Runtime variables the deployment needs (nothing is needed at build time):
+#   DIRECTUS_URL     the Directus base URL, reached server-to-server
+#   DIRECTUS_TOKEN   the service account token (npm run directus:bootstrap prints
+#                    it into .env — copy it to the platform's variables)
+#   SESSION_SECRET   cookie signing key, e.g. `openssl rand -hex 32`
+#   QR_API_KEY       QR provider key
+#   TRUST_PROXY=1    the platform's edge proxy appends X-Forwarded-For
+#   PORT             injected by most platforms (default 8080)
 
 [variables]
 NODE_VERSION = "24"

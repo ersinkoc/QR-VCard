@@ -21,3 +21,6 @@ directus/.bootstrap-state.json
 
 .dfmt/
 .claude/settings.json
+
+# Browser-automation screenshots and downloads
+.playwright-mcp/

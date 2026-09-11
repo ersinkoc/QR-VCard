@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Runs the app and the QR proxy together, so development needs one command:
+ * Runs the Vite app and the Node API server (app API + QR proxy) together, so
+ * development needs one command:
  *
  *   npm run dev:all
  *
@@ -72,4 +73,4 @@ process.on('SIGINT', () => stop(0));
 process.on('SIGTERM', () => stop(0));
 
 start('app', 'dev');
-start('qr-proxy', 'qr:proxy');
+start('api', 'api');
