@@ -8,6 +8,8 @@ import QrDisplay from '../components/QrDisplay';
 import { useI18n } from '../i18n';
 import type { PublicCard } from '../lib/api';
 import { displayName, fetchPublicCard, publicPhotoUrl, shortUrl } from '../lib/api';
+import type { QrStyle } from '../lib/qr';
+import { qrDownloadUrl } from '../lib/qr';
 
 type State = { kind: 'loading' } | { kind: 'missing' } | { kind: 'failed' } | { kind: 'ready'; card: PublicCard };
 
@@ -17,6 +19,7 @@ export default function ScanPage() {
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [showQr, setShowQr] = useState(false);
+  const [qrStyle, setQrStyle] = useState<QrStyle>('standard');
 
   useEffect(() => {
     let alive = true;
@@ -109,9 +112,30 @@ export default function ScanPage() {
             <div className="mt-6 border-t border-line pt-4">
               {showQr ? (
                 <div className="flex flex-col items-center gap-3 rise">
-                  <QrDisplay code={card.code} label={url} size={200} />
+                  <div className="flex rounded-lg border border-line bg-surface p-1 text-xs">
+                    <button
+                      type="button"
+                      className={`rounded px-2.5 py-1 font-medium transition-colors ${qrStyle === 'standard' ? 'bg-primary text-white shadow-xs' : 'text-muted hover:text-fg'}`}
+                      onClick={() => setQrStyle('standard')}
+                    >
+                      {t('qr.styleStandard')}
+                    </button>
+                    <button
+                      type="button"
+                      className={`rounded px-2.5 py-1 font-medium transition-colors ${qrStyle === 'art' ? 'bg-primary text-white shadow-xs' : 'text-muted hover:text-fg'}`}
+                      onClick={() => setQrStyle('art')}
+                    >
+                      {t('qr.styleArt')}
+                    </button>
+                  </div>
+                  <QrDisplay code={card.code} label={url} size={200} style={qrStyle} />
                   <p className="code text-muted">{url}</p>
-                  <CopyButton text={url} />
+                  <div className="flex gap-2">
+                    <CopyButton text={url} />
+                    <a className="btn btn-secondary btn-sm" href={qrDownloadUrl(card.code, { style: qrStyle })} download={`qr-${card.code}-${qrStyle}.png`}>
+                      {t('qr.download')}
+                    </a>
+                  </div>
                 </div>
               ) : (
                 <button type="button" className="btn btn-ghost w-full" onClick={() => setShowQr(true)}>

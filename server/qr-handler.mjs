@@ -24,10 +24,25 @@
  *      verified to return 200; `npm run qr:verify` re-checks it.
  *   2. Success is RAW PNG bytes (`image/png`), not JSON, despite its Swagger.
  */
+import QRCode from 'qrcode';
 import { clientKey, createRateLimiter } from './rate-limit.mjs';
 
 export const QR_PREFIX = '/api/qr/';
 export const HEALTH_PATH = '/healthz';
+
+/** Generates a standard high-contrast, clean black & white QR code locally without any external API. */
+export async function generateStandardQr(text) {
+  return QRCode.toBuffer(text, {
+    type: 'png',
+    width: 1000,
+    margin: 2,
+    errorCorrectionLevel: 'H',
+    color: {
+      dark: '#000000',
+      light: '#ffffff',
+    },
+  });
+}
 
 const CODE_RE = /^[A-Za-z0-9-]{1,32}$/;
 const HOST_RE = /^[A-Za-z0-9.-]+(?::\d{1,5})?$|^\[[0-9a-fA-F:]+\](?::\d{1,5})?$/;
@@ -118,6 +133,7 @@ export function qrConfigFromEnv(env = process.env) {
     rateMax: positiveInt(env.QR_RATE_LIMIT_MAX, DEFAULT_RATE_LIMIT_MAX),
     rateWindowMs: positiveInt(env.QR_RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_LIMIT_WINDOW_MS),
     trustProxy: (env.TRUST_PROXY || env.QR_TRUST_PROXY) === '1',
+    fallbackToStandard: env.QR_FALLBACK_STANDARD !== '0',
   };
 }
 
@@ -136,37 +152,41 @@ function sendJson(res, status, payload, headers = {}) {
   res.end(JSON.stringify(payload));
 }
 
-export function createQrHandler(config = qrConfigFromEnv(), { fetchImpl = (...a) => globalThis.fetch(...a), now = () => Date.now(), log = console } = {}) {
+export function createQrHandler(
+  config = qrConfigFromEnv(),
+  { fetchImpl = (...a) => globalThis.fetch(...a), now = () => Date.now(), log = console, standardQrGenerator = generateStandardQr } = {},
+) {
   const { provider, key } = config;
   const publicUrl = config.publicUrl ?? '';
   const rateMax = config.rateMax ?? DEFAULT_RATE_LIMIT_MAX;
   const rateWindowMs = config.rateWindowMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS;
   const trustProxy = config.trustProxy ?? false;
+  const fallbackToStandard = config.fallbackToStandard ?? false;
   const limiter = createRateLimiter({ max: rateMax, windowMs: rateWindowMs });
 
-  /** text -> { png, at }; Map order doubles as LRU order. */
+  /** cacheKey -> { png, at }; Map order doubles as LRU order. */
   const cache = new Map();
-  /** text -> Promise<Buffer>: one provider call per text, however many ask at once. */
+  /** cacheKey -> Promise<Buffer>: one generation call per text/style, however many ask at once. */
   const inFlight = new Map();
 
-  function cached(text) {
-    const hit = cache.get(text);
+  function cached(cacheKey) {
+    const hit = cache.get(cacheKey);
     if (!hit) return null;
     if (now() - hit.at > CACHE_TTL_MS) {
-      cache.delete(text);
+      cache.delete(cacheKey);
       return null;
     }
-    cache.delete(text);
-    cache.set(text, hit);
+    cache.delete(cacheKey);
+    cache.set(cacheKey, hit);
     return hit.png;
   }
 
-  function remember(text, png) {
-    cache.set(text, { png, at: now() });
+  function remember(cacheKey, png) {
+    cache.set(cacheKey, { png, at: now() });
     while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
   }
 
-  async function generate(text) {
+  async function generateArt(text) {
     const upstream = await fetchImpl(`${provider}/QR/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ApiKey: key },
@@ -182,11 +202,11 @@ export function createQrHandler(config = qrConfigFromEnv(), { fetchImpl = (...a)
     return body;
   }
 
-  function generateOnce(text) {
-    const pending = inFlight.get(text);
+  function generateOnce(cacheKey, fn) {
+    const pending = inFlight.get(cacheKey);
     if (pending) return pending;
-    const request = generate(text).finally(() => inFlight.delete(text));
-    inFlight.set(text, request);
+    const request = fn().finally(() => inFlight.delete(cacheKey));
+    inFlight.set(cacheKey, request);
     return request;
   }
 
@@ -195,7 +215,7 @@ export function createQrHandler(config = qrConfigFromEnv(), { fetchImpl = (...a)
     const path = url.pathname;
 
     if (path === HEALTH_PATH && (req.method === 'GET' || req.method === 'HEAD')) {
-      sendJson(res, 200, { ok: true, provider, keyConfigured: key.length > 0 });
+      sendJson(res, 200, { ok: true, provider, keyConfigured: key.length > 0, standardQrSupported: true });
       return true;
     }
     if (path !== '/api/qr' && !path.startsWith(QR_PREFIX)) return false;
@@ -221,24 +241,42 @@ export function createQrHandler(config = qrConfigFromEnv(), { fetchImpl = (...a)
     }
     const text = `${origin}/c/${code}`;
 
-    let png = cached(text);
+    const styleParam = (url.searchParams.get('style') ?? '').toLowerCase();
+    const isStandard = styleParam === 'standard';
+    const isArt = styleParam === 'art';
+    const useStandard = isStandard || (!isArt && !key && fallbackToStandard);
+    const style = useStandard ? 'standard' : 'art';
+    const cacheKey = `${style}:${text}`;
+
+    let png = cached(cacheKey);
     if (!png) {
-      const rate = limiter.hit(clientKey(req, trustProxy), now());
-      if (rate.limited) {
-        sendJson(res, 429, { error: { code: 'RATE_LIMITED', message: `max ${rateMax} QR codes per ${Math.round(rateWindowMs / 1000)}s` } }, { 'Retry-After': String(rate.retryAfterSec) });
-        return true;
-      }
-      if (!key) {
-        sendJson(res, 503, { error: { code: 'QR_NOT_CONFIGURED', message: 'the QR provider key is not configured' } });
-        return true;
-      }
-      try {
-        png = await generateOnce(text);
-        remember(text, png);
-      } catch (err) {
-        log.error?.(`[qr] ${text}: ${err?.message ?? err}`);
-        sendJson(res, 502, { error: { code: 'QR_UPSTREAM', message: 'the QR provider failed' } });
-        return true;
+      if (useStandard) {
+        try {
+          png = await generateOnce(cacheKey, () => standardQrGenerator(text));
+          remember(cacheKey, png);
+        } catch (err) {
+          log.error?.(`[qr] standard qr failed for ${text}: ${err?.message ?? err}`);
+          sendJson(res, 500, { error: { code: 'QR_GENERATION_FAILED', message: 'failed to generate standard QR code' } });
+          return true;
+        }
+      } else {
+        const rate = limiter.hit(clientKey(req, trustProxy), now());
+        if (rate.limited) {
+          sendJson(res, 429, { error: { code: 'RATE_LIMITED', message: `max ${rateMax} QR codes per ${Math.round(rateWindowMs / 1000)}s` } }, { 'Retry-After': String(rate.retryAfterSec) });
+          return true;
+        }
+        if (!key) {
+          sendJson(res, 503, { error: { code: 'QR_NOT_CONFIGURED', message: 'the QR provider key is not configured' } });
+          return true;
+        }
+        try {
+          png = await generateOnce(cacheKey, () => generateArt(text));
+          remember(cacheKey, png);
+        } catch (err) {
+          log.error?.(`[qr] ${text}: ${err?.message ?? err}`);
+          sendJson(res, 502, { error: { code: 'QR_UPSTREAM', message: 'the QR provider failed' } });
+          return true;
+        }
       }
     }
 
@@ -253,5 +291,5 @@ export function createQrHandler(config = qrConfigFromEnv(), { fetchImpl = (...a)
     return true;
   }
 
-  return { handle, provider, keyConfigured: key.length > 0, publicUrl, rateMax, rateWindowMs, trustProxy };
+  return { handle, provider, keyConfigured: key.length > 0, standardQrSupported: true, publicUrl, rateMax, rateWindowMs, trustProxy };
 }

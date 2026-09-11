@@ -31,7 +31,7 @@ function providerOk() {
 
 function setup(overrides = {}, fetchImpl = providerOk()) {
   const h = createQrHandler(
-    { provider: 'https://provider.test', key: 'secret-key', publicUrl: '', rateMax: 30, rateWindowMs: 60_000, trustProxy: false, ...overrides },
+    { provider: 'https://provider.test', key: 'secret-key', publicUrl: '', rateMax: 30, rateWindowMs: 60_000, trustProxy: false, fallbackToStandard: false, ...overrides },
     { fetchImpl, log: {} },
   );
   const get = async (url, headers) => {
@@ -146,6 +146,33 @@ describe('GET /api/qr/:code', () => {
     expect(res.json().error.code).toBe('QR_UPSTREAM');
   });
 
+  it('generates standard QR code with ?style=standard locally without calling the provider', async () => {
+    const { get, fetchImpl } = setup({ key: '' });
+    const { res } = await get('/api/qr/abc?style=standard');
+    expect(res.status).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/png');
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('falls back to standard QR code when fallbackToStandard: true and key is missing', async () => {
+    const { get, fetchImpl } = setup({ key: '', fallbackToStandard: true });
+    const { res } = await get('/api/qr/abc');
+    expect(res.status).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/png');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keys cache independently for standard and art styles', async () => {
+    const { get, fetchImpl } = setup();
+    await get('/api/qr/abc?style=standard');
+    await get('/api/qr/abc?style=art');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await get('/api/qr/abc?style=standard');
+    await get('/api/qr/abc?style=art');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('rate-limits cache misses per client, with Retry-After', async () => {
     const { get } = setup({ rateMax: 2 });
     await get('/api/qr/a1');
@@ -169,7 +196,7 @@ describe('everything else', () => {
   it('answers /healthz without exposing the key', async () => {
     const { handled, res } = await setup().get('/healthz');
     expect(handled).toBe(true);
-    expect(res.json()).toEqual({ ok: true, provider: 'https://provider.test', keyConfigured: true });
+    expect(res.json()).toEqual({ ok: true, provider: 'https://provider.test', keyConfigured: true, standardQrSupported: true });
     expect(res.body.toString()).not.toContain('secret-key');
   });
 

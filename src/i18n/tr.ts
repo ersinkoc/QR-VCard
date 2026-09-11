@@ -139,6 +139,8 @@ export const tr = {
     download: 'PNG indir',
     downloading: 'Hazırlanıyor…',
     draftHint: 'Bu kart taslak: QR taranınca “kart bulunamadı” görünür. Paylaşmadan önce yayınlayın.',
+    styleStandard: 'Standart QR',
+    styleArt: 'Özel / Sanatsal',
   },
   scan: {
     notFoundTitle: 'Kart bulunamadı',

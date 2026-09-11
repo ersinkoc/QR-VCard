@@ -1,25 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
+import type { QrStyle } from '../lib/qr';
 import { qrImageUrl } from '../lib/qr';
 
 /**
  * The QR for a card's short link. `label` is the link it encodes (shown and read
  * out); the image itself comes from the same-origin /api/qr/<code>.
  */
-export default function QrDisplay({ code, label, size = 240, className }: { code: string; label: string; size?: number; className?: string }) {
+export default function QrDisplay({
+  code,
+  label,
+  size = 240,
+  style = 'standard',
+  className,
+}: {
+  code: string;
+  label: string;
+  size?: number;
+  style?: QrStyle;
+  className?: string;
+}) {
   const { t } = useI18n();
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [attempt, setAttempt] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const src = `${qrImageUrl(code)}${attempt ? `?retry=${attempt}` : ''}`;
+  const baseSrc = qrImageUrl(code, { style });
+  const src = `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}r=${attempt}`;
 
   useEffect(() => {
     setState('loading');
     setExpanded(false);
-  }, [code, attempt]);
+  }, [code, style, attempt]);
 
   // Enlarged view: Escape closes, Tab stays inside, the page behind cannot
   // scroll, and focus returns to the thumbnail that opened it.

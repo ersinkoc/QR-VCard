@@ -141,6 +141,8 @@ export const en: Dict = {
     download: 'Download PNG',
     downloading: 'Preparing…',
     draftHint: 'This card is a draft: scanning shows “card not found”. Publish it before sharing.',
+    styleStandard: 'Standard QR',
+    styleArt: 'Artistic QR',
   },
   scan: {
     notFoundTitle: 'Card not available',

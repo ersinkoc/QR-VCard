@@ -10,4 +10,9 @@ describe('QR URLs', () => {
   it('encode the code, so it can never escape the path', () => {
     expect(qrImageUrl('a/../b')).toBe('/api/qr/a%2F..%2Fb');
   });
+
+  it('supports style option for standard and art QR', () => {
+    expect(qrImageUrl('demo', { style: 'standard' })).toBe('/api/qr/demo?style=standard');
+    expect(qrDownloadUrl('demo', { style: 'standard' })).toBe('/api/qr/demo?download=1&style=standard');
+  });
 });
