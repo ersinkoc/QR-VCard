@@ -83,6 +83,7 @@ function UserFormModal({
   const [email, setEmail] = useState(user?.email ?? '');
   const [firstName, setFirstName] = useState(user?.first_name ?? '');
   const [lastName, setLastName] = useState(user?.last_name ?? '');
+  const [username, setUsername] = useState(user?.username ?? '');
   const [roleId, setRoleId] = useState(() => roles.find((r) => r.name === user?.role_name)?.id ?? defaultRole);
   const [status, setStatus] = useState<'active' | 'suspended'>(user?.status === 'suspended' ? 'suspended' : 'active');
   const [password, setPassword] = useState('');
@@ -96,14 +97,23 @@ function UserFormModal({
     setBusy(true);
     setError(null);
     try {
+      const savedUsername = username.trim().toLowerCase();
       const saved = user
         ? await updateUser(user.id, {
             email: email.trim(),
             first_name: firstName.trim(),
             last_name: lastName.trim(),
+            username: savedUsername || null,
             ...(isSelf ? {} : { role: roleId, status }),
           })
-        : await createUser({ email: email.trim(), first_name: firstName.trim(), last_name: lastName.trim(), role: roleId, password });
+        : await createUser({
+            email: email.trim(),
+            first_name: firstName.trim(),
+            last_name: lastName.trim(),
+            role: roleId,
+            password,
+            ...(savedUsername ? { username: savedUsername } : {}),
+          });
       onSaved(saved);
     } catch (e) {
       setError(e);
@@ -140,6 +150,17 @@ function UserFormModal({
             <input id={`${uid}-last`} className="input" value={lastName} onChange={(e) => setLastName(e.target.value)} />
           </Field>
         </div>
+        <Field id={`${uid}-username`} label={t('users.username')} error={fieldErrors.username} hint={t('users.usernameHint')}>
+          <input
+            id={`${uid}-username`}
+            className="input code"
+            autoComplete="off"
+            spellCheck={false}
+            value={username}
+            onChange={(e) => setUsername(e.target.value.toLocaleLowerCase('en'))}
+            placeholder="ada"
+          />
+        </Field>
         <Field
           id={`${uid}-role`}
           label={t('users.role')}
@@ -302,12 +323,12 @@ export default function UsersView() {
 
   const upsert = (user: AdminUser) => {
     setUsers((list) => (list ? (list.some((u) => u.id === user.id) ? list.map((u) => (u.id === user.id ? user : u)) : [...list, user].sort((a, b) => a.email.localeCompare(b.email))) : [user]));
-    if (user.id === me.id) setMe({ id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name, role: user.role, role_name: user.role_name });
+    if (user.id === me.id) setMe({ id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name, username: user.username, role: user.role, role_name: user.role_name });
   };
 
   const visible = useMemo(() => {
     const needle = q.trim().toLocaleLowerCase();
-    return (users ?? []).filter((u) => !needle || [u.email, u.first_name, u.last_name].filter(Boolean).some((v) => String(v).toLocaleLowerCase().includes(needle)));
+    return (users ?? []).filter((u) => !needle || [u.email, u.first_name, u.last_name, u.username].filter(Boolean).some((v) => String(v).toLocaleLowerCase().includes(needle)));
   }, [users, q]);
 
   async function toggleStatus(user: AdminUser) {

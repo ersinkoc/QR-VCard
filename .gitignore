@@ -8,6 +8,14 @@ dev-dist/
 .env
 server/.env
 
+# Backups made by `npm run backup` (data.db snapshots + photo archives)
+backups/
+
+# Playwright artifacts (test-results, reports) and the throwaway credentials
+test-results/
+playwright-report/
+.playwright/
+
 # Directus (Docker volumes live in named volumes; local-only artifacts below)
 directus/.env
 directus/data.db
@@ -24,3 +32,8 @@ directus/.bootstrap-state.json
 
 # Browser-automation screenshots and downloads
 .playwright-mcp/
+.freebuff/
+.claude/
+.dfmt/
+# Baked by Docker/nixpacks builds (commit id for /healthz)
+.commit-sha

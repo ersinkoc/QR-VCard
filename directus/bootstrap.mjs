@@ -43,7 +43,7 @@ function writeRootEnv(values) {
 }
 
 const DEFAULTS = {
-  DIRECTUS_URL: 'http://localhost:8055',
+  DIRECTUS_URL: 'http://localhost:18055',
   ADMIN_EMAIL: 'admin@local.dev',
   ADMIN_PASSWORD: 'vcard-admin',
   ADMIN_SEED_CODE: 'demo-admin',
@@ -142,6 +142,10 @@ async function main() {
           { field: 'phone', type: 'string', meta: { interface: 'input', width: 'half' } },
           { field: 'email', type: 'string', meta: { interface: 'input', width: 'half' } },
           { field: 'website', type: 'string', meta: { interface: 'input' } },
+          { field: 'linkedin', type: 'string', meta: { interface: 'input', width: 'half', note: 'Full LinkedIn profile URL (normalised by the QR-VCard server)' }, schema: { max_length: 300 } },
+          { field: 'instagram', type: 'string', meta: { interface: 'input', width: 'half', note: 'Full Instagram profile URL (normalised by the QR-VCard server)' }, schema: { max_length: 300 } },
+          { field: 'whatsapp', type: 'string', meta: { interface: 'input', width: 'half', note: 'Full WhatsApp wa.me link (normalised by the QR-VCard server)' }, schema: { max_length: 300 } },
+          { field: 'telegram', type: 'string', meta: { interface: 'input', width: 'half', note: 'Full Telegram t.me link (normalised by the QR-VCard server)' }, schema: { max_length: 300 } },
           { field: 'address', type: 'text', meta: { interface: 'input-multiline', options: { placeholder: 'Street, city…' } } },
           { field: 'note', type: 'text', meta: { interface: 'input-multiline' } },
           { field: 'accent_color', type: 'string', meta: { interface: 'select-color', default_value: '#4f46e5' }, schema: { default_value: '#4f46e5' } },
@@ -313,6 +317,120 @@ async function main() {
     console.log('[bootstrap] field vcards.photo_style created');
   }
 
+  // Social profile fields: added after the first release, so installs created
+  // before them get the four columns here (idempotent, like qrv_views below).
+  for (const field of ['linkedin', 'instagram', 'whatsapp', 'telegram']) {
+    const exists = await api(`/fields/vcards/${field}`, { token: adminToken }).then(() => true, () => false);
+    if (!exists) {
+      await api('/fields/vcards', {
+        method: 'POST',
+        token: adminToken,
+        body: { field, type: 'string', meta: { interface: 'input', width: 'half', note: 'Full profile URL (normalised by the QR-VCard server)' }, schema: { max_length: 300 } },
+      });
+      console.log(`[bootstrap] field vcards.${field} created`);
+    }
+  }
+
+  // Card view counter: incremented by the app server on every public /c/<code>
+  // page view (panel previews by signed-in users are not counted).
+  const hasViewCount = await api('/fields/vcards/qrv_views', { token: adminToken }).then(() => true, () => false);
+  if (!hasViewCount) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'qrv_views', type: 'integer', meta: { hidden: true, readonly: true, interface: 'input', note: 'Public page view count (managed by the QR-VCard server)' }, schema: { default_value: 0 } },
+    });
+    console.log('[bootstrap] field vcards.qrv_views created');
+  }
+
+  // Which card answers the owner's `/<username>` short URL. At most one card
+  // per owner carries the flag; the app server manages the lifecycle.
+  const hasIsPrimary = await api('/fields/vcards/is_primary', { token: adminToken }).then(() => true, () => false);
+  if (!hasIsPrimary) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'is_primary', type: 'boolean', meta: { hidden: true, readonly: true, interface: 'boolean', special: ['cast-boolean'], note: 'Answers the owner’s /<username> short URL (managed by the QR-VCard server)' }, schema: { default_value: false } },
+    });
+    console.log('[bootstrap] field vcards.is_primary created');
+  }
+
+  // ---- daily view series -----------------------------------------------------
+  // One row per card and day, written by the app server alongside the total
+  // counter; powers the 30-day scan trend in the panel (GET /api/cards/views).
+  let viewDaysCollection = null;
+  try {
+    viewDaysCollection = await api('/collections/qrv_view_days', { token: adminToken });
+  } catch {
+    /* not created yet */
+  }
+  if (!viewDaysCollection) {
+    await api('/collections', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        collection: 'qrv_view_days',
+        meta: { icon: 'insert_chart', note: 'Daily public page views per card, written by the QR-VCard server; backs the panel scan trend' },
+        schema: {},
+        fields: [
+          { field: 'id', type: 'uuid', meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] }, schema: { is_primary_key: true } },
+          { field: 'card', type: 'uuid', meta: { interface: 'select-dropdown-m2o', special: ['m2o'], options: { template: '{{code}}' } }, schema: {} },
+          { field: 'day', type: 'date', meta: { interface: 'datetime', readonly: true, note: 'UTC calendar day (YYYY-MM-DD)' }, schema: {} },
+          { field: 'views', type: 'integer', meta: { hidden: true, readonly: true, interface: 'input' }, schema: { default_value: 0 } },
+        ],
+      },
+    });
+    console.log('[bootstrap] collection qrv_view_days created');
+  }
+  const hasViewDaysLink = await api('/relations/qrv_view_days/card', { token: adminToken }).then(() => true, () => false);
+  if (!hasViewDaysLink) {
+    await api('/relations', {
+      method: 'POST',
+      token: adminToken,
+      body: { collection: 'qrv_view_days', field: 'card', related_collection: 'vcards', schema: { on_delete: 'CASCADE' } },
+    });
+    console.log('[bootstrap] relation qrv_view_days.card -> vcards (CASCADE) created');
+  }
+
+  // ---- audit log: who did what to whom --------------------------------------
+  // Written by the app server (server/api.mjs) after admin actions: account
+  // create/update/delete, card deletion, password changes. Read by GET /api/audit
+  // (admins only). The browser reaches it only through the app API.
+  let auditCollection = null;
+  try {
+    auditCollection = await api('/collections/qrv_audit_log', { token: adminToken });
+  } catch {
+    /* not created yet */
+  }
+  if (!auditCollection) {
+    await api('/collections', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        collection: 'qrv_audit_log',
+        meta: { icon: 'history', note: 'Audit trail written by the QR-VCard app server (who changed which account or card, and when)', archive_field: null },
+        schema: {},
+        fields: [
+          { field: 'id', type: 'uuid', meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] }, schema: { is_primary_key: true } },
+          { field: 'date_created', type: 'timestamp', meta: { special: ['date-created'], interface: 'datetime', readonly: true } },
+          { field: 'actor', type: 'uuid', meta: { interface: 'select-dropdown-m2o', special: ['m2o'], display: 'related-values', display_options: { template: '{{email}}' }, options: { template: '{{email}}' }, note: 'Who performed the action' }, schema: {} },
+          { field: 'actor_email', type: 'string', meta: { interface: 'input', note: 'Actor email at the time of the action — survives account deletion' }, schema: { max_length: 254 } },
+          { field: 'action', type: 'string', meta: { interface: 'input', readonly: true }, schema: { max_length: 32, is_nullable: false } },
+          { field: 'target', type: 'string', meta: { interface: 'input', note: 'What the action touched: an email for accounts, the short code for cards' }, schema: { max_length: 128 } },
+          { field: 'detail', type: 'text', meta: { interface: 'input-multiline', note: 'What exactly changed (old → new); never contains passwords' } },
+        ],
+      },
+    });
+    await api('/relations', {
+      method: 'POST',
+      token: adminToken,
+      body: { collection: 'qrv_audit_log', field: 'actor', related_collection: 'directus_users', schema: { on_delete: 'SET NULL' } },
+    });
+    console.log('[bootstrap] collection qrv_audit_log created');
+  } else {
+    console.log('[bootstrap] collection qrv_audit_log exists');
+  }
+
   // Migrate: cards from before the owner column belong to whoever created them —
   // unless that was the service account, in which case the admin takes them.
   const adminMe = await api('/users/me?fields=id', { token: adminToken });
@@ -324,7 +442,83 @@ async function main() {
   }
   if (unowned.length) console.log(`[bootstrap] ${unowned.length} card(s) given an owner`);
 
-  // ---- panel users -----------------------------------------------------------
+  // ---- card sharing -----------------------------------------------------------
+  // Junction between vcards and directus_users: a row grants a person access to
+  // a card they do not own (read + edit in the panel). Ownership stays in
+  // vcards.owner and is never derived from this table.
+  let accessCollection = null;
+  try {
+    accessCollection = await api('/collections/qrv_card_access', { token: adminToken });
+  } catch {
+    /* not created yet */
+  }
+  if (!accessCollection) {
+    await api('/collections', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        collection: 'qrv_card_access',
+        meta: { icon: 'group', note: 'Card collaborators, written by the QR-VCard server: one row per shared card × person', hidden: true },
+        schema: {},
+        fields: [
+          { field: 'id', type: 'uuid', meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] }, schema: { is_primary_key: true } },
+          { field: 'card', type: 'uuid', meta: { interface: 'select-dropdown-m2o', special: ['m2o'], options: { template: '{{code}}' } }, schema: {} },
+          { field: 'user', type: 'uuid', meta: { interface: 'select-dropdown-m2o', special: ['m2o'], options: { template: '{{email}}' } }, schema: {} },
+          { field: 'date_created', type: 'timestamp', meta: { hidden: true, readonly: true, interface: 'datetime', special: ['date-created'] }, schema: {} },
+        ],
+      },
+    });
+    console.log('[bootstrap] collection qrv_card_access created');
+  }
+  const hasAccessCardLink = await api('/relations/qrv_card_access/card', { token: adminToken }).then(() => true, () => false);
+  if (!hasAccessCardLink) {
+    await api('/relations', {
+      method: 'POST',
+      token: adminToken,
+      body: { collection: 'qrv_card_access', field: 'card', related_collection: 'vcards', schema: { on_delete: 'CASCADE' } },
+    });
+    console.log('[bootstrap] relation qrv_card_access.card -> vcards (CASCADE) created');
+  }
+  const hasAccessUserLink = await api('/relations/qrv_card_access/user', { token: adminToken }).then(() => true, () => false);
+  if (!hasAccessUserLink) {
+    await api('/relations', {
+      method: 'POST',
+      token: adminToken,
+      body: { collection: 'qrv_card_access', field: 'user', related_collection: 'directus_users', schema: { on_delete: 'CASCADE' } },
+    });
+    console.log('[bootstrap] relation qrv_card_access.user -> directus_users (CASCADE) created');
+  }
+  // Optional share expiry: the day access ends. The row stays (history), but
+  // the server stops honouring it once the day has passed — no cron needed.
+  const hasExpiresOn = await api('/fields/qrv_card_access/expires_on', { token: adminToken }).then(() => true, () => false);
+  if (!hasExpiresOn) {
+    await api('/fields/qrv_card_access', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'expires_on', type: 'date', meta: { interface: 'datetime', note: 'Day access ends (YYYY-MM-DD, optional; enforced by the QR-VCard server)' }, schema: {} },
+    });
+    console.log('[bootstrap] field qrv_card_access.expires_on created');
+  }
+
+  // ---- usernames ---------------------------------------------------------------
+  // A username IS the owner's public short URL (/<username>), so uniqueness is
+  // enforced in the DATABASE, not by check-then-write: two simultaneous claims
+  // must not both win. Directus special `cast-boolean`-style handling is not
+  // needed here; the column is a plain unique string, written lowercase only.
+  const hasUsername = await api('/fields/directus_users/username', { token: adminToken }).then(() => true, () => false);
+  if (!hasUsername) {
+    await api('/fields/directus_users', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        field: 'username',
+        type: 'string',
+        meta: { interface: 'input', width: 'half', note: 'Public short URL /<username> (lowercase, unique; managed by the QR-VCard server)' },
+        schema: { max_length: 32, is_unique: true },
+      },
+    });
+    console.log('[bootstrap] field directus_users.username created (unique)');
+  }
   const ensureUser = async (email, password, roleId, first, last = '') => {
     const existing = await api(`/users?filter[email][_eq]=${encodeURIComponent(email)}&limit=-1`, { token: adminToken });
     if (existing.length) {

@@ -11,6 +11,8 @@ export interface Me {
   email: string;
   first_name: string | null;
   last_name: string | null;
+  /** Public short URL name — `/<username>` serves the owner's primary card. */
+  username: string | null;
   role: RoleKind;
   role_name: string | null;
 }
@@ -21,6 +23,12 @@ export interface CardOwner {
   name: string | null;
 }
 
+/** A person a card is shared with (can open and edit it, not delete or re-share). */
+export interface Collaborator extends CardOwner {
+  /** The day access ends (YYYY-MM-DD), when the share is time-limited. */
+  expires_on?: string;
+}
+
 export interface CardContent {
   first_name: string | null;
   last_name: string | null;
@@ -29,6 +37,11 @@ export interface CardContent {
   phone: string | null;
   email: string | null;
   website: string | null;
+  /** Canonical profile URLs (https), normalised by the server. */
+  linkedin: string | null;
+  instagram: string | null;
+  whatsapp: string | null;
+  telegram: string | null;
   address: string | null;
   note: string | null;
   accent_color: string | null;
@@ -42,9 +55,17 @@ export interface Card extends CardContent {
   code: string;
   /** Photo file id (cache-buster), or null. */
   photo: string | null;
+  /** Public page views counted by the server (panel previews excluded). */
+  qrv_views: number;
+  /** Answers the owner's /<username> short URL (one per owner). */
+  is_primary: boolean;
   date_created: string | null;
   /** Present for admins and editors only. */
   owner?: CardOwner | null;
+  /** How many people the card is shared with (badge; full list on demand). */
+  collaborator_count?: number;
+  /** Full collaborator list — included by the shares endpoints. */
+  collaborators?: Collaborator[];
 }
 
 export interface PublicCard extends CardContent {
@@ -64,7 +85,7 @@ export interface Role {
   kind: RoleKind;
 }
 
-export type CardInput = Partial<CardContent> & { status?: Card['status']; code?: string; owner_id?: string };
+export type CardInput = Partial<CardContent> & { status?: Card['status']; code?: string; is_primary?: boolean; owner_id?: string };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -144,7 +165,8 @@ export async function fetchMe(): Promise<Me | null> {
   }
 }
 
-export const updateMe = (patch: { email?: string; first_name?: string | null; last_name?: string | null }) => request<Me>('PATCH', '/api/me', patch);
+export const updateMe = (patch: { email?: string; first_name?: string | null; last_name?: string | null; username?: string | null }) =>
+  request<Me>('PATCH', '/api/me', patch);
 
 export async function changePassword(current_password: string, new_password: string): Promise<void> {
   await request<null>('POST', '/api/me/password', { current_password, new_password });
@@ -159,6 +181,19 @@ export const updateCard = (id: string, patch: CardInput) => request<Card>('PATCH
 export async function deleteCard(id: string): Promise<void> {
   await request<null>('DELETE', `/api/cards/${id}`);
 }
+
+// --- card sharing -------------------------------------------------------------------
+
+export const listCardShares = (id: string) => request<Collaborator[]>('GET', `/api/cards/${id}/shares`);
+
+export const addCardShare = (id: string, email: string, expires_on?: string | null) =>
+  request<Collaborator[]>('POST', `/api/cards/${id}/shares`, { email, ...(expires_on ? { expires_on } : {}) });
+
+export const setCardShareExpiry = (id: string, userId: string, expires_on: string | null) =>
+  request<Collaborator[]>('PATCH', `/api/cards/${id}/shares/${userId}`, { expires_on });
+
+export const removeCardShare = (id: string, userId: string) =>
+  request<Collaborator[]>('DELETE', `/api/cards/${id}/shares/${userId}`);
 
 export const uploadCardPhoto = (id: string, image: Blob) => request<Card>('POST', `/api/cards/${id}/photo`, image);
 export const deleteCardPhoto = (id: string) => request<Card>('DELETE', `/api/cards/${id}/photo`);
@@ -177,6 +212,16 @@ export async function fetchPublicCard(code: string): Promise<PublicCard | null> 
   }
 }
 
+/** The published card behind a `/<username>` short URL, or null. */
+export async function fetchPublicUserCard(username: string): Promise<PublicCard | null> {
+  try {
+    return await request<PublicCard>('GET', `/api/public/u/${encodeURIComponent(username)}`, undefined, { quiet401: true });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
 export function publicPhotoUrl(card: Pick<PublicCard, 'code' | 'photo'>, format?: 'jpg'): string | null {
   if (!card.photo) return null;
   return `/api/public/cards/${encodeURIComponent(card.code)}/photo?v=${card.photo}${format ? `&format=${format}` : ''}`;
@@ -187,21 +232,68 @@ export function publicPhotoUrl(card: Pick<PublicCard, 'code' | 'photo'>, format?
 export const listUsers = () => request<AdminUser[]>('GET', '/api/users');
 export const listRoles = () => request<Role[]>('GET', '/api/roles');
 
-export const createUser = (input: { email: string; password: string; first_name: string; last_name: string; role: string }) =>
+export const createUser = (input: { email: string; password: string; first_name: string; last_name: string; role: string; username?: string }) =>
   request<AdminUser>('POST', '/api/users', input);
 
 export const updateUser = (
   id: string,
-  patch: Partial<{ email: string; first_name: string; last_name: string; role: string; status: 'active' | 'suspended'; password: string }>,
+  patch: Partial<{ email: string; first_name: string; last_name: string; username: string | null; role: string; status: 'active' | 'suspended'; password: string }>,
 ) => request<AdminUser>('PATCH', `/api/users/${id}`, patch);
 
 export const deleteUser = (id: string, cards: 'delete' | 'transfer') =>
   request<{ cards: number; mode: string }>('DELETE', `/api/users/${id}?cards=${cards}`);
 
+// --- audit log (admin) --------------------------------------------------------------
+
+export interface AuditEntry {
+  id: string;
+  date_created: string | null;
+  actor: { id: string } | null;
+  /** The actor's email at the time of the action — survives account deletion. */
+  actor_email: string | null;
+  action: string;
+  /** What the action touched: an email for accounts, the short code for cards. */
+  target: string | null;
+  /** What exactly changed (old → new); never contains secrets. */
+  detail: string | null;
+}
+
+export const listAudit = () => request<AuditEntry[]>('GET', '/api/audit');
+
+// --- scan trend (admin + editor) ---------------------------------------------------
+
+/** One day of the scan trend: a UTC calendar day and its public page views. */
+export interface ViewDayPoint {
+  /** YYYY-MM-DD */
+  day: string;
+  views: number;
+}
+
+export interface ViewTrend {
+  /** First day of the window (YYYY-MM-DD). */
+  start: string;
+  /** Number of points — equals the requested window unless the series is younger. */
+  days: number;
+  /** Sum over the window. */
+  total: number;
+  series: ViewDayPoint[];
+}
+
+/**
+ * Daily public-view totals for the last `days` days. Admins and editors only;
+ * 501 NOT_SUPPORTED when the install has not re-run bootstrap.
+ */
+export const fetchViewTrend = (days = 30) => request<ViewTrend>('GET', `/api/cards/views?days=${days}`, undefined, { quiet401: false });
+
 // --- helpers ---------------------------------------------------------------------------
 
 export function shortUrl(code: string): string {
   return `${window.location.origin}/c/${code}`;
+}
+
+/** The owner's personal short URL — their username, serving their primary card. */
+export function userUrl(username: string): string {
+  return `${window.location.origin}/${username}`;
 }
 
 export function displayName(c: { first_name: string | null; last_name: string | null }): string {

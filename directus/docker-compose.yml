@@ -3,7 +3,7 @@ services:
     image: directus/directus:latest
     container_name: qr-vcard-directus
     ports:
-      - "8055:8055"
+      - "18055:8055"
     volumes:
       - directus_database:/directus/database
       - directus_uploads:/directus/uploads

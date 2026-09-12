@@ -24,7 +24,14 @@ NPM_CONFIG_UPDATE_NOTIFIER = "false"
 cmds = ["npm ci"]
 
 [phases.build]
-cmds = ["npm run build"]
+cmds = [
+  # Bake the commit this image was built from; /healthz reports it as `sha`,
+  # which the post-deploy smoke workflow compares against the pushed commit so
+  # a run never validates a STALE deployment. Railway injects
+  # RAILWAY_GIT_COMMIT_SHA, Coolify GIT_COMMIT_SHA — take whichever exists.
+  "echo \"${RAILWAY_GIT_COMMIT_SHA:-${GIT_COMMIT_SHA:-${COMMIT_SHA:-}}}\" > .commit-sha",
+  "npm run build",
+]
 
 [start]
 cmd = "node server/serve.mjs"

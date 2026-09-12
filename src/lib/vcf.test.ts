@@ -1,6 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import { buildVcf, contactFromCard, fileNameFor, fold } from './vcf';
 
+describe('social profiles in vCard', () => {
+  it('emits social profile lines with their network types', () => {
+    const vcf = buildVcf({
+      firstName: 'Ada',
+      linkedin: 'https://www.linkedin.com/in/ada',
+      instagram: 'https://www.instagram.com/ada/',
+      whatsapp: 'https://wa.me/905550000000',
+      telegram: 'https://t.me/ada',
+    });
+    expect(vcf).toContain('X-SOCIALPROFILE;TYPE=linkedin:https://www.linkedin.com/in/ada');
+    expect(vcf).toContain('X-SOCIALPROFILE;TYPE=instagram:https://www.instagram.com/ada/');
+    expect(vcf).toContain('IMPP;X-SOCIALPROFILE=whatsapp;TYPE=whatsapp:im:https://wa.me/905550000000');
+    expect(vcf).toContain('IMPP;X-SOCIALPROFILE=telegram;TYPE=telegram:im:https://t.me/ada');
+  });
+
+  it('omits social lines that are not set', () => {
+    const vcf = buildVcf({ firstName: 'Ada' });
+    expect(vcf).not.toContain('X-SOCIALPROFILE');
+    expect(vcf).not.toContain('IMPP');
+  });
+
+  it('carries the social fields from a card to the contact', () => {
+    const contact = contactFromCard({
+      first_name: 'Ada', last_name: null, organization: null, job_title: null, phone: null,
+      email: null, website: null, linkedin: 'https://www.linkedin.com/in/ada', instagram: null,
+      whatsapp: 'https://wa.me/905550000000', telegram: null, address: null, note: null,
+    });
+    expect(contact.linkedin).toBe('https://www.linkedin.com/in/ada');
+    expect(contact.whatsapp).toBe('https://wa.me/905550000000');
+  });
+});
+
 describe('buildVcf', () => {
   it('uses CRLF line endings and includes required N/FN fields', () => {
     const vcf = buildVcf({ firstName: 'Ada', lastName: 'Lovelace' });
@@ -60,6 +92,10 @@ describe('contactFromCard', () => {
         phone: '+44 20',
         email: 'ada@example.com',
         website: 'https://example.com',
+        linkedin: null,
+        instagram: null,
+        whatsapp: null,
+        telegram: null,
         address: 'London',
         note: null,
       }),

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import Field from '../../components/Field';
 import { errorText, fieldErrorTexts, useI18n } from '../../i18n';
-import { changePassword, updateMe } from '../../lib/api';
+import { changePassword, updateMe, userUrl } from '../../lib/api';
 import { useSession } from './session';
 
 export default function AccountView() {
@@ -12,6 +12,7 @@ export default function AccountView() {
   const [email, setEmail] = useState(me.email);
   const [firstName, setFirstName] = useState(me.first_name ?? '');
   const [lastName, setLastName] = useState(me.last_name ?? '');
+  const [username, setUsername] = useState(me.username ?? '');
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileNotice, setProfileNotice] = useState(false);
   const [profileError, setProfileError] = useState<unknown>(null);
@@ -31,6 +32,7 @@ export default function AccountView() {
     setEmail(me.email);
     setFirstName(me.first_name ?? '');
     setLastName(me.last_name ?? '');
+    setUsername(me.username ?? '');
   }, [me]);
 
   async function onProfile(ev: FormEvent) {
@@ -39,12 +41,16 @@ export default function AccountView() {
     setProfileError(null);
     setProfileNotice(false);
     try {
-      const patch: { email?: string; first_name?: string; last_name?: string } = {
+      const patch: { email?: string; first_name?: string; last_name?: string; username?: string | null } = {
         first_name: firstName.trim(),
         last_name: lastName.trim(),
       };
       if (email.trim().toLowerCase() !== me.email.toLowerCase()) {
         patch.email = email.trim().toLowerCase();
+      }
+      const nextUsername = username.trim().toLowerCase();
+      if (nextUsername !== (me.username ?? '')) {
+        patch.username = nextUsername || null;
       }
       const updated = await updateMe(patch);
       setMe(updated);
@@ -106,6 +112,17 @@ export default function AccountView() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+            />
+          </Field>
+          <Field id="acc-username" label={t('account.username')} error={profileFields.username} hint={me.username ? userUrl(me.username) : t('account.usernameHint')}>
+            <input
+              id="acc-username"
+              className="input code"
+              autoComplete="off"
+              spellCheck={false}
+              value={username}
+              onChange={(e) => setUsername(e.target.value.toLocaleLowerCase('en'))}
+              placeholder="ada"
             />
           </Field>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

@@ -5,7 +5,7 @@
  * The app's security model is: browsers get nothing from Directus, the app server
  * gets everything through its service token. This proves both halves at the
  * Directus layer; the app-level rules (own cards only, admin-only users) are
- * covered by server/api.test.mjs and, end to end, by `npm run smoke:live`.
+ * covered by server/api.test.mjs and, end to end, by `npm run smoke`.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

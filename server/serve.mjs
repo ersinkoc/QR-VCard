@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { apiConfigFromEnv, createApiHandler } from './api.mjs';
 import { createQrHandler, qrConfigFromEnv } from './qr-handler.mjs';
+import { createLogger, loggerConfigFromEnv } from './logger.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = resolve(process.env.DIST_DIR || join(HERE, '..', 'dist'));
@@ -82,9 +83,10 @@ function acceptsGzip(req) {
   return typeof enc === 'string' && /\bgzip\b/i.test(enc);
 }
 
-const qr = createQrHandler(qrConfigFromEnv());
+const log = createLogger(loggerConfigFromEnv());
+const qr = createQrHandler({ ...qrConfigFromEnv(), log: log.scoped('qr') });
 const apiConfig = apiConfigFromEnv();
-const api = createApiHandler(apiConfig);
+const api = createApiHandler({ ...apiConfig, log: log.scoped('api') });
 
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
@@ -126,6 +128,17 @@ async function sendFile(req, res, filePath, pathname) {
 }
 
 const server = createServer(async (req, res) => {
+  // One structured access line per request, whatever branch answers it. The
+  // line is emitted when the response finishes (status/bytes known); the
+  // request id is echoed as X-Request-Id for correlation with client reports.
+  const rlog = log.start(req, res);
+  res.on('finish', () => {
+    const apiPath = (req.url ?? '').startsWith('/api/');
+    rlog.finish(res.statusCode, {
+      type: apiPath ? 'api' : 'static',
+      bytes: Number(res.getHeader('Content-Length')) || undefined,
+    });
+  });
   try {
     // The app API, then the QR endpoint and /healthz, are answered in-process.
     if (await api.handle(req, res)) return;
@@ -176,7 +189,8 @@ const server = createServer(async (req, res) => {
     }
     await sendFile(req, res, join(DIST, 'index.html'), '/index.html');
   } catch (err) {
-    console.error(`[app] ${req.method} ${req.url} failed: ${err?.message ?? err}`);
+    log.error(`unhandled request failure`, { req_id: rlog.id, method: req.method, path: req.url, err: { name: err?.name ?? 'Error', message: String(err?.message ?? err) } });
+    rlog.finish(500, { type: 'static', error: err });
     if (!res.headersSent) json(res, 500, { error: 'internal error' });
   }
 });
@@ -185,7 +199,7 @@ server.on('error', (err) => {
   // One readable line instead of an unhandled-error stack (which `npm run api`'s
   // --watch would otherwise repeat on every restart).
   if (err.code === 'EADDRINUSE') {
-    console.error(`[app] port ${PORT} is already in use — stop the other process or set PORT`);
+    log.error(`[app] port ${PORT} is already in use — stop the other process or set PORT`);
     process.exitCode = 1;
     return;
   }
@@ -193,13 +207,13 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[app] serving ${DIST} on http://localhost:${PORT}`);
-  console.log(
+  log.info(`[app] serving ${DIST} on http://localhost:${PORT}`);
+  log.info(
     api.configured
       ? `[app] API: /api/* -> Directus ${apiConfig.directusUrl}${apiConfig.derivedSecret ? ' (session key derived from DIRECTUS_TOKEN — set SESSION_SECRET to decouple)' : ''}`
       : '[app] API: NOT CONFIGURED — set DIRECTUS_URL and DIRECTUS_TOKEN (npm run directus:bootstrap writes them); /api/* answers 503',
   );
-  console.log(
+  log.info(
     `[app] QR endpoint: POST /api/qr -> ${qr.provider} (key ${qr.keyConfigured ? 'configured' : 'MISSING — POST will fail with 500'}, rate ${qr.rateMax}/${Math.round(qr.rateWindowMs / 1000)}s${qr.trustProxy ? '' : ', socket-keyed — set QR_TRUST_PROXY=1 behind a reverse proxy'})`,
   );
 });

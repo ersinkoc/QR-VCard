@@ -24,11 +24,31 @@
  *      verified to return 200; `npm run qr:verify` re-checks it.
  *   2. Success is RAW PNG bytes (`image/png`), not JSON, despite its Swagger.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import { clientKey, createRateLimiter } from './rate-limit.mjs';
 
 export const QR_PREFIX = '/api/qr/';
 export const HEALTH_PATH = '/healthz';
+
+/**
+ * The commit this build came from: `QRV_COMMIT_SHA` when the platform injects
+ * it at runtime, else the `.commit-sha` file the Dockerfile / nixpacks build
+ * wrote. /healthz reports it as `sha` so a post-deploy pipeline can verify
+ * that THIS commit is live — absent when neither is available (local dev).
+ */
+function commitSha() {
+  const fromEnv = (process.env.QRV_COMMIT_SHA || '').trim();
+  if (/^[0-9a-f]{7,40}$/i.test(fromEnv)) return fromEnv;
+  try {
+    const fromFile = (readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.commit-sha'), 'utf8').trim());
+    return /^[0-9a-f]{7,40}$/i.test(fromFile) ? fromFile : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Generates a standard high-contrast, clean black & white QR code locally without any external API. */
 export async function generateStandardQr(text) {
@@ -215,7 +235,16 @@ export function createQrHandler(
     const path = url.pathname;
 
     if (path === HEALTH_PATH && (req.method === 'GET' || req.method === 'HEAD')) {
-      sendJson(res, 200, { ok: true, provider, keyConfigured: key.length > 0, standardQrSupported: true });
+      // `sha` lets a post-deploy pipeline verify that THIS commit is live:
+      // nixpacks/Docker bake QRV_COMMIT_SHA from `git rev-parse HEAD` at build
+      // time. Optional field — clients must treat `ok` as the only contract.
+      sendJson(res, 200, {
+        ok: true,
+        provider,
+        keyConfigured: key.length > 0,
+        standardQrSupported: true,
+        ...(commitSha() ? { sha: commitSha() } : {}),
+      });
       return true;
     }
     if (path !== '/api/qr' && !path.startsWith(QR_PREFIX)) return false;

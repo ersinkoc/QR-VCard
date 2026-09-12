@@ -9,7 +9,9 @@ export default function ContactActions({ card }: { card: PublicCard }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const tel = card.phone?.replace(/[^\d+]/g, '') ?? null;
-  const wa = card.phone ? `https://wa.me/${card.phone.replace(/[^\d]/g, '')}` : null;
+  // The stored value IS the canonical wa.me link when set; only fall back to
+  // deriving it from the phone for cards saved before the social fields.
+  const wa = card.whatsapp ?? (card.phone ? `https://wa.me/${card.phone.replace(/[^\d]/g, '')}` : null);
   const name = displayName(card) || card.organization || t('scan.contact');
 
   async function addToContacts() {
@@ -51,6 +53,21 @@ export default function ContactActions({ card }: { card: PublicCard }) {
       {wa && (
         <a className="btn btn-secondary" href={wa} target="_blank" rel="noreferrer">
           {t('scan.whatsapp')}
+        </a>
+      )}
+      {card.telegram && (
+        <a className="btn btn-secondary" href={card.telegram} target="_blank" rel="noreferrer">
+          {t('scan.telegram')}
+        </a>
+      )}
+      {card.linkedin && (
+        <a className="btn btn-secondary" href={card.linkedin} target="_blank" rel="noreferrer">
+          {t('scan.linkedin')}
+        </a>
+      )}
+      {card.instagram && (
+        <a className="btn btn-secondary" href={card.instagram} target="_blank" rel="noreferrer">
+          {t('scan.instagram')}
         </a>
       )}
       {card.website && (

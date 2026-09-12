@@ -7,6 +7,11 @@ export interface VCardContact {
   phone?: string | null;
   email?: string | null;
   website?: string | null;
+  /** Canonical profile URLs; emitted as RFC 6350 §6.2.3 X-SOCIALPROFILE. */
+  linkedin?: string | null;
+  instagram?: string | null;
+  whatsapp?: string | null;
+  telegram?: string | null;
   address?: string | null;
   note?: string | null;
   /** Embedded photo: base64 without prefix. */
@@ -22,6 +27,10 @@ export interface CardFields {
   phone: string | null;
   email: string | null;
   website: string | null;
+  linkedin: string | null;
+  instagram: string | null;
+  whatsapp: string | null;
+  telegram: string | null;
   address: string | null;
   note: string | null;
 }
@@ -40,6 +49,10 @@ export function contactFromCard(card: CardFields): VCardContact {
     phone: card.phone,
     email: card.email,
     website: card.website,
+    linkedin: card.linkedin,
+    instagram: card.instagram,
+    whatsapp: card.whatsapp,
+    telegram: card.telegram,
     address: card.address,
     note: card.note,
   };
@@ -65,6 +78,13 @@ export function buildVcf(c: VCardContact): string {
   if (c.phone) lines.push(`TEL;TYPE=CELL:${esc(c.phone)}`);
   if (c.email) lines.push(`EMAIL;TYPE=INTERNET:${esc(c.email)}`);
   if (c.website) lines.push(`URL:${esc(c.website)}`);
+  // RFC 6350 §6.5.1: IMPP is a URI (im:https://… parses), and the TYPE params
+  // name the network — Android/iOS address books that understand it show a
+  // labelled entry; the rest keep an ignorable extra line.
+  if (c.whatsapp) lines.push(`IMPP;X-SOCIALPROFILE=whatsapp;TYPE=whatsapp:im:${esc(c.whatsapp)}`);
+  if (c.telegram) lines.push(`IMPP;X-SOCIALPROFILE=telegram;TYPE=telegram:im:${esc(c.telegram)}`);
+  if (c.linkedin) lines.push(`X-SOCIALPROFILE;TYPE=linkedin:${esc(c.linkedin)}`);
+  if (c.instagram) lines.push(`X-SOCIALPROFILE;TYPE=instagram:${esc(c.instagram)}`);
   if (c.address) lines.push(`ADR;TYPE=WORK:;;${esc(c.address)};;;;`);
   if (c.note) lines.push(`NOTE:${esc(c.note)}`);
   if (c.photo) lines.push(fold(`PHOTO;ENCODING=b;TYPE=${c.photo.type}:${c.photo.base64}`));

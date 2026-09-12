@@ -43,7 +43,7 @@ automatically from `X-Forwarded-Proto`.
 curl -sS https://kart.example.com/healthz
 curl -sS https://kart.example.com/api/health
 curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' https://kart.example.com/api/qr/demo-01
-SMOKE_BASE_URL=https://kart.example.com npm run smoke:live
+SMOKE_BASE_URL=https://kart.example.com npm run smoke
 ```
 
 Configuration is described in the root [README](../README.md#environment-variables-server-runtime).

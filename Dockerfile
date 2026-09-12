@@ -13,7 +13,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+# Bake the commit this image was built from; /healthz reports it as `sha`,
+# which the post-deploy smoke workflow compares against the pushed commit so a
+# run never validates a STALE deployment.
+ARG COMMIT_SHA=""
+RUN echo "$COMMIT_SHA" > .commit-sha && npm run build
 
 # Runtime stage: no dependencies to install — the server is plain node:http.
 FROM node:24-alpine
@@ -21,6 +25,7 @@ ENV NODE_ENV=production \
     PORT=8080
 WORKDIR /app
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/.commit-sha ./.commit-sha
 COPY server/serve.mjs server/api.mjs server/access.mjs server/directus-client.mjs \
      server/session.mjs server/rate-limit.mjs server/validate.mjs server/qr-handler.mjs ./server/
 USER node

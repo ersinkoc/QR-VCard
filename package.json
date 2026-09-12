@@ -15,16 +15,19 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test --project=panel",
     "icons": "node scripts/make-icons.mjs",
     "scripts:check": "node scripts/check-scripts.mjs",
     "deploy:check": "node scripts/check-dist.mjs",
-    "smoke:live": "node scripts/smoke-live.mjs",
+    "smoke": "playwright test --project=smoke",
     "qr:verify": "node scripts/verify-qr-api.mjs",
     "directus:up": "docker compose -f directus/docker-compose.yml up -d",
     "directus:down": "docker compose -f directus/docker-compose.yml down",
     "directus:bootstrap": "node directus/bootstrap.mjs",
     "directus:verify": "node directus/verify.mjs",
-    "directus:start": "docker compose -f directus/docker-compose.yml up"
+    "directus:start": "docker compose -f directus/docker-compose.yml up",
+    "backup": "node scripts/backup-directus.mjs",
+    "restore": "node scripts/restore-directus.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",
@@ -33,12 +36,14 @@
     "react-router-dom": "^7.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.0",
     "@tailwindcss/vite": "^4.1.0",
     "@types/node": "^22.20.2",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "cross-env": "^10.1.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",

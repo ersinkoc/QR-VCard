@@ -5,6 +5,19 @@ card and every account. **Users** create and manage only their own cards and sha
 them as QR codes that resolve to a short URL (`/c/<code>`). Opening that URL shows
 the card and lets the visitor add it to their contacts (`.vcf`, photo included).
 
+Every account can also claim a **username** (lowercase, unique, optional): it becomes
+a personal short URL, `/<username>`, which serves the owner's *primary* card — chosen
+automatically (first card), switchable in the panel, and re-pointed to the oldest
+remaining card when the primary is deleted. `/c/<code>` links never change, so printed
+QR codes keep working regardless.
+
+Cards can also be **shared**: the owner grants access by email — optionally with an
+**expiry day** — and collaborators see and edit the card from their own panel, but
+cannot delete it, re-share it, or take ownership. Expired shares stop granting access
+automatically (no cron; a re-add or a PATCH to the date revives or extends them). Only
+the owner (or an admin/editor) manages the share list; every grant, expiry change and
+revoke is audited.
+
 - **Frontend** — Vite + React 19 + TypeScript + Tailwind 4, installable PWA, Turkish + English UI.
 - **App server** — dependency-free Node (`server/`): the single web endpoint — the app, the
   app API (`/api/*`) and QR images (`/api/qr/<code>`) on one port and one origin.
@@ -16,7 +29,7 @@ the card and lets the visitor add it to their contacts (`.vcf`, photo included).
 
 ```bash
 npm install
-npm run directus:up         # local Directus on http://localhost:8055 (Docker, SQLite volume)
+npm run directus:up         # local Directus on http://localhost:18055 (Docker, SQLite volume)
 npm run directus:bootstrap  # provisions Directus and writes DIRECTUS_URL + DIRECTUS_TOKEN to .env
 npm run directus:verify     # proves Directus refuses browsers and accepts the service token
 npm run dev:all             # Vite on :5173 + the API server on :8787 (PORT), one command
@@ -95,6 +108,31 @@ When `npm run directus:bootstrap` runs, it provisions 3 default accounts and 2 d
   (their QR codes keep working).
 - Setting a password (admin) or changing it (self) **signs that account out everywhere**;
   suspending an account ends its sessions at once.
+- **Audit trail**: account create/update/delete, password changes, card deletions and
+  card share/unshare actions are recorded in `qrv_audit_log` with actor, target and
+  old → new detail (never secrets). Admins read it at `/panel/audit` (or `GET /api/audit`);
+  writes are fire-and-forget, so an audit failure never breaks the user's action.
+- **Structured logs**: every request leaves one JSON line (`req_id`, `method`, `path`,
+  `status`, `ms`, `type`, `bytes`) — slow requests are flagged `slow: true` at warn level
+  (`LOG_SLOW_MS`, default 1000) and failures carry an `err` object at error level. Request
+  ids come from `X-Request-Id` when a proxy supplies one and are echoed back to the
+  client. Successful healthchecks are silent (`LOG_HEALTH=1` to include them); failing
+  ones are always logged. `LOG_FORMAT=text` keeps a compact human-readable line. The
+  legacy `[api]`/`[qr]` diagnostics flow through the same pipeline with a `tag`.
+- **Social profiles**: LinkedIn, Instagram, WhatsApp and Telegram on every card. The form
+  accepts a full profile URL or a bare handle (`@ada`, `+90 555 …`) and the server stores
+  one canonical https URL per network (`invalid_<network>` otherwise). The public page
+  renders labelled buttons; the exported vCard carries them as `X-SOCIALPROFILE` / `IMPP`
+  entries.
+- **View counts**: every anonymous visit to a public card page increments `vcards.qrv_views`
+  (approximate — concurrent views can race; signed-in panel previews never count). Owners
+  see per-card counts and a total in the panel; installs that have not re-run
+  `npm run directus:bootstrap` simply keep counting disabled.
+- **Scan trend**: the same visit also lands in `qrv_view_days` (one row per card and
+  UTC day, `QRV_TZ` overrides the day boundary), so admins and editors get a 30-day
+  daily scan-trend chart in the panel (`GET /api/cards/views?days=1..90`). Aggregation
+  happens in Directus (sum by day); the window is always contiguous with zeros for
+  empty days. Without the collection the chart degrades to a 501 — totals keep working.
 
 ## Security model
 
@@ -136,7 +174,7 @@ browser ──(HttpOnly cookie)──▶ app server (/api) ──(DIRECTUS_TOKEN
 | `DIRECTUS_URL` | yes | Directus base URL, reached server-to-server |
 | `DIRECTUS_TOKEN` | yes | static token of the service account (bootstrap creates it) |
 | `SESSION_SECRET` | recommended | cookie signing key, ≥ 16 chars (`openssl rand -hex 32`); derived from the token when empty |
-| `PUBLIC_URL` | recommended | public address, e.g. `https://kart.example.com`; QR codes encode `PUBLIC_URL/c/<code>` |
+| `PUBLIC_URL` | recommended | public address, e.g. `https://kart.example.com`; QR codes encode `PUBLIC_URL/c/<code>`. Usernames add `PUBLIC_URL/<username>` |
 | `QR_API_KEY` | for QR | QR provider key (`QR_API_URL` overrides the provider) |
 | `TRUST_PROXY` | behind a proxy | `1` = rate limits key on the last `X-Forwarded-For` hop |
 | `COOKIE_SECURE` | optional | `1` forces the `Secure` flag (automatic on https / `X-Forwarded-Proto: https`) |
@@ -155,13 +193,16 @@ Nothing is needed at build time; the bundle holds no environment-specific values
 | `npm run build` | typecheck + production build (`dist/`) |
 | `npm run start` | production server: `dist/` + `/api` + `/api/qr/<code>` on one port, reads `.env` |
 | `npm test` | Vitest: API authorisation rules, validation, i18n, vCard, QR |
+| `npm run test:e2e` | Playwright: the panel flows in a real browser (needs Docker Directus + `npm run build`) |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run scripts:check` | syntax-check every `.mjs` in `scripts/`, `server/`, `directus/` |
 | `npm run deploy:check` | fail a `dist/` that contains a Directus URL or a secret name |
-| `npm run smoke:live` | end-to-end checks against a running deployment (see below) |
+| `npm run smoke` | post-deploy smoke against a running deployment (see below) |
 | `npm run directus:up` / `:down` | start / stop the local Directus container |
 | `npm run directus:bootstrap` | provision Directus (idempotent) |
 | `npm run directus:verify` | prove the Directus lockdown |
+| `npm run backup` | consistent backup of the Directus DB + photos into `backups/<timestamp>/` (retention: 7 runs) |
+| `npm run restore` | verified, guided restore of a backup (asks `--yes` before touching anything) |
 | `npm run qr:verify` | probe the QR provider directly |
 | `npm run icons` | regenerate the PWA icons |
 
@@ -181,16 +222,61 @@ The same image works against any Directus — nothing is baked in, and Directus 
 configuration because browsers never call it. Keep HTTPS at the edge (sessions and the PWA
 need a secure origin). Health check: `/healthz` (process) and `/api/health` (Directus + token).
 
-After deploying:
+After deploying, verification is automatic: on every push to `master` the `deploy-smoke`
+job in [`e2e.yml`](.github/workflows/e2e.yml) waits (up to 20 minutes) for the platform to
+serve the pushed commit — the build bakes it and `/healthz` reports it as `sha` — then runs
+the full smoke suite against production. Configure it once in the repository's **Settings →
+Secrets and variables → Actions**:
+
+| Name | Kind | Meaning |
+|---|---|---|
+| `SMOKE_PRODUCTION_URL` | variable | e.g. `https://kart.example.com` — without it the job skips itself |
+| `SMOKE_PANEL_EMAIL` / `SMOKE_PANEL_PASSWORD` | secrets | admin account for the sign-in checks (optional) |
+| `SMOKE_USER_EMAIL` / `SMOKE_USER_PASSWORD` | secrets | plain account for the isolation checks (optional) |
+| `SMOKE_DIRECTUS_URL` | secret | enables the Directus lockdown check (optional) |
+
+If the production URL never reports the new commit, the job fails with a clear error —
+a deployment that did not roll out is caught, not silently forgotten. For a one-off check
+against any URL, the manual path still works:
 
 ```bash
 SMOKE_BASE_URL=https://your-domain USER_EMAIL=... USER_PASSWORD=... \
-DIRECTUS_URL=https://directus.example.com npm run smoke:live
+DIRECTUS_URL=https://directus.example.com npm run smoke
 ```
+
+### Backups
+
+The database (accounts, cards) and the uploads volume (photos) are backed up
+together by `npm run backup` and restored by `npm run restore` — verified
+against SHA-256 manifests, with a quarterly drill procedure to prove the backups
+actually restore. Full runbook: [`docs/backup-restore.md`](docs/backup-restore.md).
 
 It checks both health endpoints, the SPA routes, the public card, admin sign-in and cookie
 flags, a plain user's isolation (own cards only, 404 on foreign cards, 403 on accounts),
-the Directus lockdown and one QR generation.
+the Directus lockdown and one QR generation. Implemented as the `smoke` project of the
+Playwright suite, so it runs in the same runner as the panel tests — checks without the
+matching credentials or configuration (e.g. no `USER_EMAIL`) are skipped, never failed.
+Without `SMOKE_BASE_URL` it targets `http://127.0.0.1:4173` and starts the app server
+itself, so `npm run smoke` alone works right after `npm run build`.
+
+## End-to-end tests (Playwright)
+
+```bash
+npm run directus:up      # Directus in Docker
+npm run build            # E2E drives the BUILT app
+npm run test:e2e         # real browser against server/serve.mjs on :4173
+```
+
+The suite covers the panel flows end to end: sign-in (failure and success), role
+visibility (a user/editor never sees Users or Audit tabs; direct navigation redirects),
+card create → publish → QR modal (real generated PNG) → delete, the public card API,
+the audit trail recording a user creation, photo upload served back through the API,
+and API-level permission denials (403 for `/api/users` and `/api/audit` as a plain user).
+Every run provisions throwaway accounts (admin/editor/user) through the service token
+and deletes them afterwards — seed accounts are never touched. The E2E workflow runs
+the same suite nightly (02:00 UTC) against a fresh Directus container, and can be
+triggered on demand from the Actions tab — it is deliberately not part of the
+every-push CI gate, so run it manually before a release or after touching auth/panel code.
 
 ## One web endpoint — QR included (Standard & Artistic)
 

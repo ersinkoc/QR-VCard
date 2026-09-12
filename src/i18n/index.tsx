@@ -93,6 +93,11 @@ export function errorText(t: Translate, err: unknown): string {
   return t('errors.unknown');
 }
 
+/** Narrow an unknown thrown value back to the typed ApiError. */
+export function isApiError(err: unknown): err is ApiError {
+  return err instanceof ApiError;
+}
+
 /** Per-field messages from a VALIDATION (or similar) API error. */
 export function fieldErrorTexts(t: Translate, err: unknown): Record<string, string> {
   if (!(err instanceof ApiError) || !err.fields) return {};

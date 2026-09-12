@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from 'vite';
+import { configDefaults } from 'vitest/config';
 import type { ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -49,5 +50,11 @@ export default defineConfig(({ mode }) => {
     ],
     server: { proxy: apiProxy },
     preview: { proxy: apiProxy },
+    // The Playwright suite lives in e2e/ and must not be picked up by vitest:
+    // spec files there call test.describe() through @playwright/test, which
+    // vitest cannot load (two runners, one extension).
+    test: {
+      exclude: [...configDefaults.exclude, 'e2e/**', 'playwright-report/**', 'test-results/**'],
+    },
   };
 });

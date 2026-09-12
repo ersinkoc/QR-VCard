@@ -4,10 +4,12 @@ import Avatar from '../../components/Avatar';
 import CopyButton from '../../components/CopyButton';
 import Modal from '../../components/Modal';
 import { errorText, useI18n } from '../../i18n';
-import type { Card } from '../../lib/api';
-import { cardPhotoUrl, deleteCard, displayName, isPrivileged, listCards, shortUrl, updateCard } from '../../lib/api';
+import type { Card, ViewTrend } from '../../lib/api';
+import { cardPhotoUrl, deleteCard, displayName, fetchViewTrend, isPrivileged, listCards, shortUrl, updateCard } from '../../lib/api';
 import CardForm from './CardForm';
 import QrModal from './QrModal';
+import ShareModal from './ShareModal';
+import TrendChart from './TrendChart';
 import { useSession } from './session';
 
 function Stat({ label, value }: { label: string; value: number }) {
@@ -34,7 +36,9 @@ export default function CardsView() {
   const [editing, setEditing] = useState<'new' | Card | null>(null);
   const [qrCard, setQrCard] = useState<Card | null>(null);
   const [deleting, setDeleting] = useState<Card | null>(null);
+  const [sharing, setSharing] = useState<Card | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [trend, setTrend] = useState<ViewTrend | null>(null);
   const formRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -53,6 +57,23 @@ export default function CardsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The 30-day scan trend (admins and editors only). A failed or unsupported
+  // series is never an error surface — the gauge just stays hidden.
+  useEffect(() => {
+    if (!privileged || cards === null || cards.length === 0) return;
+    let alive = true;
+    fetchViewTrend(30)
+      .then((t) => {
+        if (alive) setTrend(t);
+      })
+      .catch(() => {
+        if (alive) setTrend(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [privileged, cards === null, cards?.length]);
 
   useEffect(() => {
     if (editing) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -94,6 +115,21 @@ export default function CardsView() {
     }
   }
 
+  async function togglePrimary(card: Card) {
+    if (card.is_primary) return;
+    setBusyId(card.id);
+    setActionError(null);
+    try {
+      upsert(await updateCard(card.id, { is_primary: true }));
+      setCards((list) => list?.map((c) => (c.owner === card.owner && c.id !== card.id ? { ...c, is_primary: false } : c)) ?? null);
+      setNotice(t('cards.primaryNotice'));
+    } catch (e) {
+      setActionError(e);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function confirmDelete(card: Card) {
     setBusyId(card.id);
     setActionError(null);
@@ -109,6 +145,9 @@ export default function CardsView() {
       setBusyId(null);
     }
   }
+
+  /** Only the owner (or a privileged actor) may change a card's share list. */
+  const canShare = (card: Card) => privileged || card.owner?.id === me.id;
 
   const ownerText = (card: Card) => {
     if (!card.owner) return t('cards.unowned');
@@ -136,10 +175,17 @@ export default function CardsView() {
       </div>
 
       {cards && cards.length > 0 && (
-        <div className="rise rise-2 mt-5 grid grid-cols-3 gap-3">
+        <div className="rise rise-2 mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat label={t('cards.statTotal')} value={scoped.length} />
           <Stat label={t('cards.statPublished')} value={published} />
           <Stat label={t('cards.statDraft')} value={scoped.length - published} />
+          <Stat label={t('cards.statViews')} value={scoped.reduce((sum, c) => sum + (c.qrv_views || 0), 0)} />
+        </div>
+      )}
+
+      {privileged && trend && trend.series.length > 0 && (
+        <div className="rise mt-3">
+          <TrendChart points={trend.series} total={trend.total} />
         </div>
       )}
 
@@ -228,10 +274,16 @@ export default function CardsView() {
                       <p className="flex items-center gap-2 font-medium tracking-tight">
                         <span className="truncate">{name}</span>
                         <span className={`badge ${card.status === 'published' ? 'badge-success' : ''}`}>{card.status === 'published' ? t('cards.published') : t('cards.draft')}</span>
-                      </p>
-                      <p className="truncate text-sm text-muted">{[card.job_title, displayName(card) ? card.organization : null].filter(Boolean).join(' · ') || ' '}</p>
+                      </p>                      <p className="truncate text-sm text-muted">{[card.job_title, displayName(card) ? card.organization : null].filter(Boolean).join(' · ') || ' '}</p>
                       <p className="code truncate text-xs text-muted">
                         {url.replace(/^https?:\/\//, '')}
+                        {card.is_primary && <span className="font-sans"> · {t('cards.primary')}</span>}
+                        {(card.collaborator_count ?? 0) > 0 && (
+                          <button type="button" className="font-sans underline decoration-dotted underline-offset-2" title={t('shares.titleHint')} onClick={() => setSharing(card)}>
+                             · {t('cards.sharedWith', { count: card.collaborator_count ?? 0 })}
+                          </button>
+                        )}
+                        <span className="font-sans"> · {t('cards.views', { count: card.qrv_views || 0 })}</span>
                         {privileged && <span className="font-sans"> · {t('cards.owner', { name: ownerText(card) })}</span>}
                       </p>
                     </div>
@@ -239,6 +291,9 @@ export default function CardsView() {
                   <div className="flex flex-wrap gap-2 sm:justify-end">
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => setQrCard(card)}>
                       {t('cards.qr')}
+                    </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSharing(card)}>
+                      {t('cards.share')}
                     </button>
                     <CopyButton text={url} label={t('common.copyUrl')} className="btn btn-secondary btn-sm" />
                     <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void togglePublish(card)}>
@@ -248,6 +303,11 @@ export default function CardsView() {
                       <a className="btn btn-ghost btn-sm" href={`/c/${encodeURIComponent(card.code)}`} target="_blank" rel="noreferrer">
                         {t('cards.view')}
                       </a>
+                    )}
+                    {!card.is_primary && (
+                      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} title={t('cards.primaryHint')} onClick={() => void togglePrimary(card)}>
+                        {t('cards.makePrimary')}
+                      </button>
                     )}
                     <button
                       type="button"
@@ -271,6 +331,8 @@ export default function CardsView() {
       </div>
 
       {qrCard && <QrModal card={qrCard} onClose={() => setQrCard(null)} />}
+
+      {sharing && <ShareModal card={sharing} canManage={canShare(sharing)} onClose={() => setSharing(null)} onSaved={upsert} />}
 
       {deleting && (
         <Modal

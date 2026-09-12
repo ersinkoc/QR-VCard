@@ -7,15 +7,19 @@ import LanguageSwitch from '../components/LanguageSwitch';
 import QrDisplay from '../components/QrDisplay';
 import { useI18n } from '../i18n';
 import type { PublicCard } from '../lib/api';
-import { displayName, fetchPublicCard, publicPhotoUrl, shortUrl } from '../lib/api';
+import { displayName, fetchPublicCard, fetchPublicUserCard, publicPhotoUrl, shortUrl } from '../lib/api';
 import type { QrStyle } from '../lib/qr';
 import { qrDownloadUrl } from '../lib/qr';
 
 type State = { kind: 'loading' } | { kind: 'missing' } | { kind: 'failed' } | { kind: 'ready'; card: PublicCard };
 
-export default function ScanPage() {
+/**
+ * The public card page. Rendered for both short-URL shapes: `/c/<code>` (the
+ * QR target, unique per card) and `/<username>` (the owner's primary card).
+ */
+export default function ScanPage({ byUsername = false }: { byUsername?: boolean }) {
   const { t } = useI18n();
-  const { code = '' } = useParams();
+  const { code = '', username = '' } = useParams();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [showQr, setShowQr] = useState(false);
@@ -24,7 +28,8 @@ export default function ScanPage() {
   useEffect(() => {
     let alive = true;
     setState({ kind: 'loading' });
-    fetchPublicCard(code)
+    const load = byUsername ? fetchPublicUserCard(username) : fetchPublicCard(code);
+    load
       .then((card) => {
         if (alive) setState(card ? { kind: 'ready', card } : { kind: 'missing' });
       })
@@ -35,7 +40,7 @@ export default function ScanPage() {
     return () => {
       alive = false;
     };
-  }, [code, attempt]);
+  }, [byUsername, code, username, attempt]);
 
   const name = state.kind === 'ready' ? displayName(state.card) || state.card.organization || t('scan.contact') : '';
   useEffect(() => {

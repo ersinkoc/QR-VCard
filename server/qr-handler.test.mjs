@@ -200,6 +200,26 @@ describe('everything else', () => {
     expect(res.body.toString()).not.toContain('secret-key');
   });
 
+  it('reports the baked commit sha on /healthz (post-deploy verification)', async () => {
+    process.env.QRV_COMMIT_SHA = 'abc1234def5678abc1234def5678abc1234def56';
+    try {
+      const { res } = await setup().get('/healthz');
+      expect(res.json()).toMatchObject({ ok: true, sha: 'abc1234def5678abc1234def5678abc1234def56' });
+    } finally {
+      delete process.env.QRV_COMMIT_SHA;
+    }
+  });
+
+  it('ignores a malformed QRV_COMMIT_SHA instead of echoing it', async () => {
+    process.env.QRV_COMMIT_SHA = '<script>alert(1)</script>';
+    try {
+      const { res } = await setup().get('/healthz');
+      expect(res.json().sha).toBeUndefined();
+    } finally {
+      delete process.env.QRV_COMMIT_SHA;
+    }
+  });
+
   it('leaves paths it does not own to the caller', async () => {
     expect((await setup().get('/c/abc')).handled).toBe(false);
     expect((await setup().get('/api/qrx')).handled).toBe(false);

@@ -2,7 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import Avatar from '../../components/Avatar';
 import Field from '../../components/Field';
-import { errorText, fieldErrorTexts, useI18n } from '../../i18n';
+import { errorText, fieldErrorTexts, isApiError, useI18n } from '../../i18n';
 import type { AdminUser, Card, CardInput } from '../../lib/api';
 import { cardPhotoUrl, createCard, deleteCardPhoto, displayName, listUsers, shortUrl, updateCard, uploadCardPhoto } from '../../lib/api';
 import { shrinkImage } from '../../lib/image';
@@ -10,7 +10,7 @@ import { useSession } from './session';
 
 const ACCENTS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#db2777', '#18181b'];
 
-type FieldKey = 'first_name' | 'last_name' | 'organization' | 'job_title' | 'phone' | 'email' | 'website' | 'address' | 'note';
+type FieldKey = 'first_name' | 'last_name' | 'organization' | 'job_title' | 'phone' | 'email' | 'website' | 'linkedin' | 'instagram' | 'whatsapp' | 'telegram' | 'address' | 'note';
 
 const INPUTS: Record<FieldKey, { type?: string; inputMode?: 'tel' | 'email' | 'url'; autoComplete?: string; multiline?: boolean; wide?: boolean; placeholder?: string }> = {
   first_name: { autoComplete: 'given-name' },
@@ -22,13 +22,21 @@ const INPUTS: Record<FieldKey, { type?: string; inputMode?: 'tel' | 'email' | 'u
   // type=text: type=url would reject "example.com", which the server accepts and
   // normalises to https://example.com.
   website: { inputMode: 'url', autoComplete: 'url', wide: true, placeholder: 'ornek.com' },
+  // The server accepts a full URL or a bare handle and stores the canonical
+  // https profile link; placeholders teach that at a glance.
+  linkedin: { inputMode: 'url', placeholder: 'linkedin.com/in/ada' },
+  instagram: { inputMode: 'url', placeholder: '@ada' },
+  whatsapp: { type: 'tel', inputMode: 'tel', placeholder: '+90 555 000 00 00' },
+  telegram: { inputMode: 'url', placeholder: '@ada' },
   address: { multiline: true, wide: true },
   note: { multiline: true, wide: true },
 };
 
 const SECTIONS: { title: string; fields: FieldKey[] }[] = [
   { title: 'form.sectionPerson', fields: ['first_name', 'last_name', 'organization', 'job_title'] },
-  { title: 'form.sectionContact', fields: ['phone', 'email', 'website', 'address', 'note'] },
+  { title: 'form.sectionContact', fields: ['phone', 'email', 'website'] },
+  { title: 'form.sectionSocial', fields: ['linkedin', 'instagram', 'whatsapp', 'telegram'] },
+  { title: 'form.sectionContact', fields: ['address', 'note'] },
 ];
 
 export default function CardForm({ initial, onCancel, onSaved }: { initial: Card | null; onCancel: () => void; onSaved: (card: Card, warning?: unknown) => void }) {
@@ -277,7 +285,7 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
 
       {error !== null && (
         <p role="alert" className="mt-4 text-sm text-danger">
-          {errorText(t, error)}
+          {isApiError(error) && error.code === 'CARD_LIMIT' ? t('errors.CARD_LIMIT', { max: error.fields?.max ?? 20 }) : errorText(t, error)}
         </p>
       )}
 

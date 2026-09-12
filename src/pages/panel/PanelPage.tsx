@@ -6,6 +6,7 @@ import { errorText, useI18n } from '../../i18n';
 import type { Me } from '../../lib/api';
 import { displayName, fetchMe, login, logout, setUnauthenticatedHandler } from '../../lib/api';
 import AccountView from './AccountView';
+import AuditView from './AuditView';
 import CardsView from './CardsView';
 import { SessionContext } from './session';
 import UsersView from './UsersView';
@@ -98,6 +99,11 @@ function PanelLayout({ me, onSignOut, children }: { me: Me; onSignOut: () => voi
             {me.role === 'admin' && (
               <NavLink to="/panel/users" className={tab}>
                 {t('nav.users')}
+              </NavLink>
+            )}
+            {me.role === 'admin' && (
+              <NavLink to="/panel/audit" className={tab}>
+                {t('nav.audit')}
               </NavLink>
             )}
             <NavLink to="/panel/account" className={tab}>
@@ -217,6 +223,7 @@ export default function PanelPage() {
         <Routes>
           <Route index element={<CardsView />} />
           <Route path="users" element={session.me.role === 'admin' ? <UsersView /> : <Navigate to="/panel" replace />} />
+          <Route path="audit" element={session.me.role === 'admin' ? <AuditView /> : <Navigate to="/panel" replace />} />
           <Route path="account" element={<AccountView />} />
           <Route path="*" element={<Navigate to="/panel" replace />} />
         </Routes>

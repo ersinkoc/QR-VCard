@@ -1,0 +1,136 @@
+# End-to-end suite: the real stack (built app + Directus in Docker).
+#
+# Runs nightly on the default branch and on demand (Actions tab → Run
+# workflow). Kept out of the per-push CI gate on purpose: it needs Docker and
+# Playwright and takes several minutes, while the gate (test + typecheck +
+# build + deploy:check) already covers everything a bundle needs. Run it
+# manually before a release or after touching auth/panel code.
+#
+# The compose file reads directus/.env, which is gitignored, so CI writes a
+# minimal one; bootstrap then provisions roles, the service account and
+# DIRECTUS_TOKEN.
+#
+# The deploy-smoke job is the automatic post-deploy verification: after every
+# push it waits for the platform (Railway/Coolify/Docker) to serve THIS commit
+# — /healthz reports the baked `sha` — and then runs the Playwright smoke
+# suite against production. Configure SMOKE_PRODUCTION_URL (and optionally the
+# account secrets) in the repository's Actions secrets; the job skips itself
+# when the URL is not configured.
+name: E2E
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # nightly, 02:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - 'docs/**'
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # The Docker-based suite stays nightly/manual; pushes are covered by the
+    # deploy-smoke job below (and the CI gate).
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Write a minimal directus/.env (gitignored, compose needs it)
+        run: |
+          cat > directus/.env <<EOF
+          KEY=$(openssl rand -hex 16)
+          SECRET=$(openssl rand -hex 16)
+          PORT=8055
+          DB_CLIENT=sqlite3
+          DB_FILENAME=/directus/database/data.db
+          ADMIN_EMAIL=admin@local.dev
+          ADMIN_PASSWORD=ci-admin-password
+          EOF
+      - run: npm run directus:up
+      - name: Provision Directus (roles, service account, DIRECTUS_TOKEN)
+        run: npm run directus:bootstrap
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # Automatic post-deploy smoke: verify PRODUCTION serves the pushed commit.
+  # Needs repository secrets/variables:
+  #   SMOKE_PRODUCTION_URL (variable or secret, required) — e.g. https://kart.example.com
+  #   SMOKE_PANEL_EMAIL / SMOKE_PANEL_PASSWORD (secrets, optional) — admin account
+  #   SMOKE_USER_EMAIL / SMOKE_USER_PASSWORD (secrets, optional) — plain account for isolation
+  #   SMOKE_DIRECTUS_URL (secret, optional) — enables the Directus lockdown check
+  deploy-smoke:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Resolve the production URL
+        id: cfg
+        run: |
+          URL="${SMOKE_PRODUCTION_URL:-}"
+          if [ -z "$URL" ]; then
+            echo "SMOKE_PRODUCTION_URL is not configured — skipping the post-deploy smoke."
+            echo "Add it as a repository VARIABLE (or secret) and re-run this workflow."
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          SMOKE_PRODUCTION_URL: ${{ vars.SMOKE_PRODUCTION_URL || secrets.SMOKE_PRODUCTION_URL }}
+      - name: Wait until production serves this commit
+        if: steps.cfg.outputs.url != ''
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          URL="${{ steps.cfg.outputs.url }}"
+          echo "Waiting up to 20 minutes for https://$URL/healthz to report sha=$SHA …"
+          for i in $(seq 1 120); do
+            BODY="$(curl -fsS --max-time 10 "$URL/healthz" 2>/dev/null || true)"
+            if printf '%s' "$BODY" | grep -q "\"sha\":\"$SHA\""; then
+              echo "Commit $SHA is live after ~$((i * 10))s."; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Production never reported sha=$SHA within 20 minutes — deploy did not roll out (or the platform does not bake QRV_COMMIT_SHA)."
+          exit 1
+      - name: Install the smoke suite
+        if: steps.cfg.outputs.url != ''
+        run: |
+          npm ci
+          npx playwright install chromium
+      - name: Run the smoke suite against production
+        if: steps.cfg.outputs.url != ''
+        env:
+          SMOKE_BASE_URL: ${{ steps.cfg.outputs.url }}
+          PANEL_EMAIL: ${{ secrets.SMOKE_PANEL_EMAIL }}
+          PANEL_PASSWORD: ${{ secrets.SMOKE_PANEL_PASSWORD }}
+          USER_EMAIL: ${{ secrets.SMOKE_USER_EMAIL }}
+          USER_PASSWORD: ${{ secrets.SMOKE_USER_PASSWORD }}
+          DIRECTUS_URL: ${{ secrets.SMOKE_DIRECTUS_URL }}
+        run: npx playwright test --project=smoke
+      - name: Upload Playwright report on failure
+        if: failure() && steps.cfg.outputs.url != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-smoke-report
+          path: playwright-report/
+          retention-days: 7
