@@ -72,5 +72,8 @@ function start(label, script) {
 process.on('SIGINT', () => stop(0));
 process.on('SIGTERM', () => stop(0));
 
-start('app', 'dev');
+// `dev.ps1` opts in to Vite's browser launch without changing the behaviour of
+// `npm run dev:all` for callers that only want the servers.
+const openPanel = process.argv.includes('--open');
+start('app', openPanel ? 'dev -- --open /panel' : 'dev');
 start('api', 'api');

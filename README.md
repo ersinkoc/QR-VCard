@@ -35,6 +35,11 @@ npm run directus:verify     # proves Directus refuses browsers and accepts the s
 npm run dev:all             # Vite on :5173 + the API server on :8787 (PORT), one command
 ```
 
+On Windows, `./dev.ps1` performs the same setup in one command: it starts and
+waits for Directus on port `18055` when needed, provisions the idempotent seed,
+then opens `/panel` while running the Vite and API dev servers. Use
+`./dev.ps1 -SkipSeed` to leave an already provisioned instance untouched.
+
 Then open http://localhost:5173/panel. Default seed accounts (provisioned by `npm run directus:bootstrap`):
 
 | Role | Email | Password | Capabilities | Seed Card |
