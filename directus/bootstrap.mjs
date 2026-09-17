@@ -169,12 +169,19 @@ async function main() {
 
   // Repair installs created before `special: ['uuid']` was set on `id`:
   // without it Directus does not generate a PK on insert (400 "id required").
-  // POST /fields requires a full definition, so send the complete field meta.
-  await api('/fields/vcards/id', {
-    method: 'PATCH',
-    token: adminToken,
-    body: { meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] }, schema: { is_primary_key: true } },
-  });
+  // Never send schema.is_primary_key for an existing PostgreSQL field. Directus
+  // expands that partial schema into an ALTER COLUMN DROP NOT NULL, which PostgreSQL
+  // rejects because the column is already part of the primary key.
+  const idField = await api('/fields/vcards/id', { token: adminToken });
+  const idSpecial = Array.isArray(idField?.meta?.special) ? idField.meta.special : [];
+  if (!idSpecial.includes('uuid')) {
+    await api('/fields/vcards/id', {
+      method: 'PATCH',
+      token: adminToken,
+      body: { meta: { special: [...idSpecial, 'uuid'] } },
+    });
+    console.log('[bootstrap] field vcards.id UUID metadata repaired');
+  }
 
   // Session epoch on accounts: the app server bumps it whenever a password is set,
   // which invalidates every existing session cookie of that account.
