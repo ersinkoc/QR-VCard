@@ -2,13 +2,15 @@
 # Dockerfile, without a checked-in Dockerfile (Railway and Coolify run Nixpacks
 # from this file; locally: `nixpacks build . --name qr-vcard`).
 #
-# The start command runs server/serve.mjs: the built SPA from dist/, the app API
-# (/api/*), the QR proxy (POST /api/qr) and GET /healthz, all on one port.
+# The start command provisions/repairs Directus first, then runs server/serve.mjs:
+# the built SPA from dist/, the app API (/api/*), the QR proxy (POST /api/qr)
+# and GET /healthz, all on one port.
 #
 # Runtime variables the deployment needs (nothing is needed at build time):
 #   DIRECTUS_URL     the Directus base URL, reached server-to-server
 #   DIRECTUS_TOKEN   the service account token (npm run directus:bootstrap prints
 #                    it into .env — copy it to the platform's variables)
+#                    It needs Administrator access for automatic provisioning.
 #   SESSION_SECRET   cookie signing key, e.g. `openssl rand -hex 32`
 #   QR_API_KEY       QR provider key
 #   TRUST_PROXY=1    the platform's edge proxy appends X-Forwarded-For
@@ -34,4 +36,4 @@ cmds = [
 ]
 
 [start]
-cmd = "node server/serve.mjs"
+cmd = "node scripts/start-production.mjs"

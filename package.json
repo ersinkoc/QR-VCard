@@ -11,6 +11,7 @@
     "dev:all": "node scripts/dev-all.mjs",
     "build": "tsc --noEmit && vite build",
     "start": "node --env-file-if-exists=.env server/serve.mjs",
+    "start:production": "node --env-file-if-exists=.env scripts/start-production.mjs",
     "api": "node --env-file-if-exists=.env --watch-path=server server/serve.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",

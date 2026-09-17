@@ -70,6 +70,11 @@ DIRECTUS_URL=https://directus.example.com npm run directus:verify
 ```
 
 Bootstrap is idempotent — re-running it repairs drift instead of duplicating data.
+Production Docker/Nixpacks startup runs this provisioning automatically in read-only
+filesystem mode with demo seeding disabled. It reads configuration only from runtime
+environment variables and never writes `.env`. The supplied `DIRECTUS_TOKEN` must belong
+to a Directus user with Administrator access so it can create or repair the remote schema.
+Set `DIRECTUS_BOOTSTRAP=0` only when schema changes are managed separately.
 
 ## Roles and what each one can do
 
@@ -178,6 +183,8 @@ browser ──(HttpOnly cookie)──▶ app server (/api) ──(DIRECTUS_TOKEN
 |---|---|---|
 | `DIRECTUS_URL` | yes | Directus base URL, reached server-to-server |
 | `DIRECTUS_TOKEN` | yes | static token of the service account (bootstrap creates it) |
+| `DIRECTUS_BOOTSTRAP` | optional | `1` (default) provisions/repairs Directus before production startup; `0` disables it |
+| `BOOTSTRAP_SEED_DEMO` | optional | production default `0`; set `1` only to create the demo users/cards |
 | `SESSION_SECRET` | recommended | cookie signing key, ≥ 16 chars (`openssl rand -hex 32`); derived from the token when empty |
 | `PUBLIC_URL` | recommended | public address, e.g. `https://kart.example.com`; QR codes encode `PUBLIC_URL/c/<code>`. Usernames add `PUBLIC_URL/<username>` |
 | `QR_API_KEY` | for QR | QR provider key (`QR_API_URL` overrides the provider) |
@@ -213,7 +220,8 @@ Nothing is needed at build time; the bundle holds no environment-specific values
 
 ## Deployment (Docker / Nixpacks)
 
-The root `Dockerfile` and `nixpacks.toml` build one image that runs `server/serve.mjs`:
+The root `Dockerfile` and `nixpacks.toml` build one image that provisions Directus
+idempotently and then runs `server/serve.mjs`:
 
 ```bash
 docker build -t qr-vcard .
@@ -222,6 +230,12 @@ docker run -d -p 8080:8080 \
   -e SESSION_SECRET=... -e QR_API_KEY=... -e TRUST_PROXY=1 \
   -e PUBLIC_URL=https://kart.example.com qr-vcard
 ```
+
+On a first deployment, the startup step creates the missing QR-VCard collections,
+fields, roles and permissions. On later deployments it safely checks/repairs them.
+It never creates demo users or cards unless `BOOTSTRAP_SEED_DEMO=1` is explicitly set.
+If Directus is unavailable or the token lacks Administrator access, the container exits
+instead of serving a partially configured application.
 
 The same image works against any Directus — nothing is baked in, and Directus needs no CORS
 configuration because browsers never call it. Keep HTTPS at the edge (sessions and the PWA

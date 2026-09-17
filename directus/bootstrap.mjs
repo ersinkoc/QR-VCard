@@ -48,6 +48,8 @@ const DEFAULTS = {
   ADMIN_PASSWORD: 'vcard-admin',
   ADMIN_SEED_CODE: 'demo-admin',
   DIRECTUS_ADMIN_TOKEN: '',
+  BOOTSTRAP_RUNTIME: '0',
+  BOOTSTRAP_SEED_DEMO: '1',
   EDITOR_EMAIL: 'editor@local.dev',
   EDITOR_PASSWORD: 'vcard-editor',
   USER_EMAIL: 'ada@local.dev',
@@ -65,7 +67,9 @@ function readEnvFile() {
   return out;
 }
 
-if (!existsSync(ENV_PATH)) {
+// Local convenience only. A production container supplies runtime variables and
+// runs as a non-root user, so it must not try to create /app/directus/.env.
+if (!existsSync(ENV_PATH) && process.env.BOOTSTRAP_RUNTIME !== '1' && !process.env.DIRECTUS_URL && !process.env.DIRECTUS_TOKEN) {
   writeFileSync(
     ENV_PATH,
     Object.entries({ ...DEFAULTS, KEY: randomUUID(), SECRET: randomUUID() })
@@ -110,8 +114,13 @@ async function findOne(path, token) {
 
 async function main() {
   console.log(`[bootstrap] target: ${BASE}`);
-  const hasRealToken = env.DIRECTUS_ADMIN_TOKEN && !/placeholder/i.test(env.DIRECTUS_ADMIN_TOKEN);
-  const adminToken = hasRealToken ? env.DIRECTUS_ADMIN_TOKEN : await login(env.ADMIN_EMAIL, env.ADMIN_PASSWORD);
+  const runtimeMode = env.BOOTSTRAP_RUNTIME === '1';
+  const rootEnv = readRootEnv();
+  const runtimeToken = (env.DIRECTUS_TOKEN || rootEnv.DIRECTUS_TOKEN || '').trim();
+  const configuredAdminToken = (env.DIRECTUS_ADMIN_TOKEN || '').trim();
+  const adminToken = configuredAdminToken && !/placeholder/i.test(configuredAdminToken)
+    ? configuredAdminToken
+    : runtimeToken || await login(env.ADMIN_EMAIL, env.ADMIN_PASSWORD);
 
   // ---- collection: vcards -------------------------------------------------
   let vcards = null;
@@ -245,26 +254,31 @@ async function main() {
   console.log('[bootstrap] public / vCard policies hold no direct data access');
 
   // ---- service account: the app server's identity ---------------------------
-  // An Administrator-role account without a password, used only through its
-  // static token by server/api.mjs. Its token goes to DIRECTUS_TOKEN in the root
-  // .env — never to the browser.
+  // An existing DIRECTUS_TOKEN may itself be the privileged deployment identity.
+  // Keep it unchanged: a container cannot update the deployment platform's env,
+  // and rotating it here would make the running app use a stale token. When no
+  // usable runtime token exists (the local/manual flow), create the dedicated
+  // service account and write its token to the root .env.
   const adminRole = (await api(`/roles?filter[name][_eq]=Administrator&fields=id&limit=1`, { token: adminToken }))[0];
   if (!adminRole) throw new Error('no "Administrator" role found — the service account needs it');
-  // Directus validates the address strictly (a `.local` domain is refused).
-  const serviceEmail = env.SERVICE_EMAIL || 'qr-vcard-service@example.com';
-  let service = (await api(`/users?filter[email][_eq]=${encodeURIComponent(serviceEmail)}&fields=id&limit=1`, { token: adminToken }))[0];
-  if (!service) {
-    service = await api('/users', { method: 'POST', token: adminToken, body: { email: serviceEmail, first_name: 'QR-VCard', last_name: 'Service', role: adminRole.id, status: 'active' } });
-    console.log(`[bootstrap] service account ${serviceEmail} created`);
-  }
-  const rootEnv = readRootEnv();
-  const current = process.env.DIRECTUS_TOKEN || rootEnv.DIRECTUS_TOKEN || '';
-  const currentWorks = current
-    ? await api('/users/me?fields=id', { token: current }).then((me) => me?.id === service.id, () => false)
-    : false;
-  if (currentWorks) {
-    console.log('[bootstrap] DIRECTUS_TOKEN already belongs to the service account');
+  const runtimeIdentity = runtimeToken
+    ? await api('/users/me?fields=id,email', { token: runtimeToken }).then((me) => me, () => null)
+    : null;
+  let service;
+  if (runtimeIdentity?.id) {
+    service = runtimeIdentity;
+    console.log(`[bootstrap] keeping the supplied DIRECTUS_TOKEN (${runtimeIdentity.email || runtimeIdentity.id})`);
   } else {
+    if (runtimeMode) {
+      throw new Error('the supplied DIRECTUS_TOKEN is not a usable runtime identity; read-only deployment cannot issue or persist a replacement token');
+    }
+    // Directus validates the address strictly (a `.local` domain is refused).
+    const serviceEmail = env.SERVICE_EMAIL || 'qr-vcard-service@example.com';
+    service = (await api(`/users?filter[email][_eq]=${encodeURIComponent(serviceEmail)}&fields=id&limit=1`, { token: adminToken }))[0];
+    if (!service) {
+      service = await api('/users', { method: 'POST', token: adminToken, body: { email: serviceEmail, first_name: 'QR-VCard', last_name: 'Service', role: adminRole.id, status: 'active' } });
+      console.log(`[bootstrap] service account ${serviceEmail} created`);
+    }
     const token = randomBytes(32).toString('hex');
     await api(`/users/${service.id}`, { method: 'PATCH', token: adminToken, body: { token } });
     writeRootEnv({ DIRECTUS_TOKEN: token, ...(rootEnv.DIRECTUS_URL ? {} : { DIRECTUS_URL: BASE }) });
@@ -518,6 +532,13 @@ async function main() {
       },
     });
     console.log('[bootstrap] field directus_users.username created (unique)');
+  }
+
+  const seedDemo = !['0', 'false', 'no', 'off'].includes(String(env.BOOTSTRAP_SEED_DEMO).trim().toLowerCase());
+  if (!seedDemo) {
+    console.log('[bootstrap] demo users and cards skipped (BOOTSTRAP_SEED_DEMO=0)');
+    console.log('[bootstrap] done');
+    return;
   }
   const ensureUser = async (email, password, roleId, first, last = '') => {
     const existing = await api(`/users?filter[email][_eq]=${encodeURIComponent(email)}&limit=-1`, { token: adminToken });

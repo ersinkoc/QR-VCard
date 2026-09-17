@@ -31,9 +31,11 @@ COPY --from=build /app/.commit-sha ./.commit-sha
 COPY server/serve.mjs server/api.mjs server/access.mjs server/directus-client.mjs \
      server/session.mjs server/rate-limit.mjs server/validate.mjs server/qr-handler.mjs \
      server/logger.mjs ./server/
+COPY directus/bootstrap.mjs ./directus/bootstrap.mjs
+COPY scripts/start-production.mjs ./scripts/start-production.mjs
 USER node
 EXPOSE 8080
 # No curl in alpine — probe with node's fetch instead.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["node", "server/serve.mjs"]
+CMD ["node", "scripts/start-production.mjs"]
