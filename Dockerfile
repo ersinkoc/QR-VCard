@@ -19,15 +19,18 @@ COPY . .
 ARG COMMIT_SHA=""
 RUN echo "$COMMIT_SHA" > .commit-sha && npm run build
 
-# Runtime stage: no dependencies to install — the server is plain node:http.
+# Runtime stage: install only the packages imported by the Node server.
 FROM node:24-alpine
 ENV NODE_ENV=production \
     PORT=8080
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/.commit-sha ./.commit-sha
 COPY server/serve.mjs server/api.mjs server/access.mjs server/directus-client.mjs \
-     server/session.mjs server/rate-limit.mjs server/validate.mjs server/qr-handler.mjs ./server/
+     server/session.mjs server/rate-limit.mjs server/validate.mjs server/qr-handler.mjs \
+     server/logger.mjs ./server/
 USER node
 EXPOSE 8080
 # No curl in alpine — probe with node's fetch instead.
