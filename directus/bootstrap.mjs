@@ -87,17 +87,29 @@ const env = { ...DEFAULTS, ...readEnvFile(), ...process.env };
 const BASE = env.DIRECTUS_URL.replace(/\/+$/, '');
 
 async function api(path, { method = 'GET', body, token } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (err) {
+    throw new Error(`Directus unreachable at ${BASE} (${method} ${path}): ${err?.cause?.code ?? err?.cause?.message ?? err?.message ?? err}`);
+  }
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(`${res.status} ${method} ${path}: ${JSON.stringify(json.errors?.map((e) => e.message) ?? json)}`);
+    // Name the fix, not just the status: these two are configuration, not bugs.
+    const hint = res.status === 401
+      ? ' — the token was rejected; check DIRECTUS_TOKEN'
+      : res.status === 403 && token
+        ? ' — the token lacks permission; provisioning needs a Directus Administrator token'
+        : '';
+    throw new Error(`${res.status} ${method} ${path}: ${JSON.stringify(json.errors?.map((e) => e.message) ?? json)}${hint}`);
   }
   return json.data;
 }

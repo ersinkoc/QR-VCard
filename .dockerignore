@@ -1,9 +1,26 @@
-# Keep the build context small and secrets out of it: the image is built with
-# --build-arg VITE_DIRECTUS_URL instead of a local .env.
+# Keep the build context small and secrets/data out of it. Nothing is needed at
+# build time: every setting is a runtime environment variable.
 node_modules
 dist
+dev-dist
 .git
-.temp_files
+.github
 .env
+.env.*
+!.env.example
 directus/.env
+directus/data.db*
+directus/.bootstrap-state.json
+backups
+test-results
+playwright-report
+.playwright
+.playwright-mcp
+.temp_files
+.claude
+.dfmt
+.design
+.freebuff
+.wrongstack
+.commit-sha
 *.log

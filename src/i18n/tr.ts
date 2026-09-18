@@ -285,6 +285,7 @@ export const tr = {
     CARD_LIMIT: 'Kart sınırına ulaştınız (en fazla {max}). Yeni kart için eskilerden birini silin.',
     LAST_ADMIN: 'En az bir aktif yönetici kalmalı.',
     SELF_LOCKOUT: 'Kendi rolünüzü veya durumunuzu değiştiremez, hesabınızı silemezsiniz.',
+    SERVICE_ACCOUNT: 'Bu hesabın token’ı uygulamayı çalıştırıyor; aktif yönetici olarak kalmalı ve silinemez.',
     WRONG_PASSWORD: 'Mevcut şifre hatalı.',
     PHOTO_TYPE: 'Fotoğraf JPEG, PNG veya WebP olmalı.',
     PHOTO_TOO_LARGE: 'Fotoğraf çok büyük (en fazla 4 MB).',

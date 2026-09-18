@@ -127,7 +127,18 @@ async function sendFile(req, res, filePath, pathname) {
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 
+// A request that arrives through a proxy while TRUST_PROXY is off is keyed on the
+// proxy's address: every visitor then shares one login/QR rate-limit bucket. Say
+// so once, in the log an operator reads first when "too many attempts" appears.
+let proxyWarned = apiConfig.trustProxy;
+function warnUntrustedProxy(req) {
+  if (proxyWarned || !req.headers['x-forwarded-for']) return;
+  proxyWarned = true;
+  log.warn('[app] requests arrive through a reverse proxy (X-Forwarded-For) but TRUST_PROXY is not 1 — all visitors share one rate-limit bucket; set TRUST_PROXY=1');
+}
+
 const server = createServer(async (req, res) => {
+  warnUntrustedProxy(req);
   // One structured access line per request, whatever branch answers it. The
   // line is emitted when the response finishes (status/bytes known); the
   // request id is echoed as X-Request-Id for correlation with client reports.
@@ -206,6 +217,25 @@ server.on('error', (err) => {
   throw err;
 });
 
+// Graceful stop: `docker stop` / a redeploy sends SIGTERM. Stop accepting, let
+// in-flight requests finish (bounded), then exit 0 so the platform records a
+// clean shutdown instead of a crash.
+const SHUTDOWN_GRACE_MS = 10_000;
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info(`[app] ${signal} received — closing (up to ${SHUTDOWN_GRACE_MS / 1000}s for open requests)`);
+  server.close(() => process.exit(0));
+  server.closeIdleConnections?.();
+  setTimeout(() => {
+    server.closeAllConnections?.();
+    process.exit(0);
+  }, SHUTDOWN_GRACE_MS).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 server.listen(PORT, () => {
   log.info(`[app] serving ${DIST} on http://localhost:${PORT}`);
   log.info(
@@ -214,6 +244,6 @@ server.listen(PORT, () => {
       : '[app] API: NOT CONFIGURED — set DIRECTUS_URL and DIRECTUS_TOKEN (npm run directus:bootstrap writes them); /api/* answers 503',
   );
   log.info(
-    `[app] QR endpoint: POST /api/qr -> ${qr.provider} (key ${qr.keyConfigured ? 'configured' : 'MISSING — POST will fail with 500'}, rate ${qr.rateMax}/${Math.round(qr.rateWindowMs / 1000)}s${qr.trustProxy ? '' : ', socket-keyed — set QR_TRUST_PROXY=1 behind a reverse proxy'})`,
+    `[app] QR endpoint: GET /api/qr/<code> — standard QR generated locally; artistic QR via ${qr.provider} ${qr.keyConfigured ? '(key configured)' : '(disabled: no QR_API_KEY)'}, rate ${qr.rateMax}/${Math.round(qr.rateWindowMs / 1000)}s${qr.trustProxy ? '' : ', socket-keyed — set TRUST_PROXY=1 behind a reverse proxy'}`,
   );
 });

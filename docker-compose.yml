@@ -1,0 +1,33 @@
+# QR-VCard app against an EXISTING Directus.
+#
+#   cp .env.example .env      # fill in DIRECTUS_URL, DIRECTUS_TOKEN, SESSION_SECRET, PUBLIC_URL
+#   docker compose up -d --build
+#
+# The container validates the variables, waits for Directus, provisions/repairs
+# the schema and serves on port 8080 (published as APP_PORT, default 8080).
+# Want Directus + PostgreSQL in the same stack? Use docker-compose.full.yml.
+# Full guide: docs/deploy.md
+services:
+  app:
+    build:
+      context: .
+      args:
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-}
+    image: qr-vcard:latest
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed inside the container; choose the host side with APP_PORT.
+      PORT: "8080"
+      DIRECTUS_URL: ${DIRECTUS_URL:?set DIRECTUS_URL in .env}
+      DIRECTUS_TOKEN: ${DIRECTUS_TOKEN:?set DIRECTUS_TOKEN in .env}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s

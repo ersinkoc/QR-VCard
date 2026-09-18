@@ -275,7 +275,17 @@ export function createApiHandler(config) {
 
   const userCache = new Map();
   let epochSupported = true;
-  let serviceUserId = null;
+  /**
+   * The Directus account that owns DIRECTUS_TOKEN. Two kinds exist:
+   *  - a dedicated service account (bootstrap's, no password): hidden from the
+   *    panel, never a target, cannot sign in — it has no password to sign in with;
+   *  - a person's Administrator account whose token the deployment uses (the
+   *    common "paste my admin token" setup): an ordinary, listed admin who can
+   *    sign in, but whom nobody can delete, suspend or demote — that would
+   *    break the app itself (409 SERVICE_ACCOUNT).
+   * Directus reports `password` masked when set and null when not.
+   */
+  let serviceIdentity = null;
 
   // View counting needs the `qrv_views` column. Installs that have not yet
   // re-run bootstrap would fail every card query that selects it, so the first
@@ -345,9 +355,22 @@ export function createApiHandler(config) {
     return user;
   }
 
+  async function getServiceIdentity() {
+    if (!serviceIdentity) {
+      const me = await directus.request('/users/me', { query: { fields: ['id', 'password'] } });
+      serviceIdentity = { id: me?.id ?? null, interactive: Boolean(me?.password) };
+    }
+    return serviceIdentity;
+  }
+
   async function getServiceUserId() {
-    if (!serviceUserId) serviceUserId = (await directus.request('/users/me', { query: { fields: ['id'] } }))?.id ?? null;
-    return serviceUserId;
+    return (await getServiceIdentity()).id;
+  }
+
+  /** The password-less service account: invisible to the panel. */
+  async function isHiddenService(id) {
+    const service = await getServiceIdentity();
+    return id === service.id && !service.interactive;
   }
 
   async function findCard(id, fields) {
@@ -395,8 +418,8 @@ export function createApiHandler(config) {
     const rows = await directus.request('/users', {
       query: { fields: ['id'], filter: { role: { name: { _eq: ROLE_ADMIN } }, status: { _eq: 'active' } }, limit: -1 },
     });
-    const service = await getServiceUserId();
-    return (rows ?? []).map((u) => u.id).filter((id) => id !== service);
+    const service = await getServiceIdentity();
+    return (rows ?? []).map((u) => u.id).filter((id) => id !== service.id || service.interactive);
   }
 
   async function assertRole(roleId) {
@@ -443,7 +466,7 @@ export function createApiHandler(config) {
       return null;
     }
     const epochOk = !epochSupported || (Number(user?.[EPOCH_FIELD]) || 0) === session.epoch;
-    if (user.status !== 'active' || !epochOk || user.id === (await getServiceUserId())) {
+    if (user.status !== 'active' || !epochOk || (await isHiddenService(user.id))) {
       clearSession(req, res);
       return null;
     }
@@ -470,9 +493,11 @@ export function createApiHandler(config) {
 
     const id = await checkPassword(email, password);
     const user = id ? await loadUser(id, { fresh: true }) : null;
-    if (!user || user.status !== 'active' || user.id === (await getServiceUserId())) {
-      throw new ApiError(401, 'INVALID_CREDENTIALS');
-    }
+    if (!user || user.status !== 'active') throw new ApiError(401, 'INVALID_CREDENTIALS');
+    // Directus just accepted a password for this account, so if it owns the
+    // token it is a person's admin account, not the password-less service one.
+    const service = await getServiceIdentity();
+    if (user.id === service.id) service.interactive = true;
     loginPerAccount.reset(`${client}|${email}`);
     setSession(req, res, user);
     sendJson(res, 200, { data: meDto(user) });
@@ -903,13 +928,13 @@ function dayString(msOrDate) {
 
   async function listUsers({ res, url }) {
     const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
-    const service = await getServiceUserId();
+    const service = await getServiceIdentity();
     const [rows, counts] = await Promise.all([
       directus.request('/users', { query: { fields: USER_FIELDS, sort: ['email'], limit: -1, ...(q ? { search: q } : {}) } }),
       directus.request('/items/vcards', { query: { aggregate: { count: '*' }, groupBy: ['owner'], limit: -1 } }),
     ]);
     const countBy = new Map((counts ?? []).map((c) => [c.owner, Number(c.count ?? 0)]));
-    sendJson(res, 200, { data: (rows ?? []).filter((u) => u.id !== service).map((u) => userDto(u, countBy.get(u.id))) });
+    sendJson(res, 200, { data: (rows ?? []).filter((u) => u.id !== service.id || service.interactive).map((u) => userDto(u, countBy.get(u.id))) });
   }
 
   /**
@@ -970,7 +995,7 @@ function dayString(msOrDate) {
       const rows = await directus.request('/users', { query: { fields: ['id'], filter: { email: { _eq: email } }, limit: 1 } });
       target = rows?.[0] ? await loadUser(rows[0].id, { fresh: true }) : null;
     }
-    if (!target || target.id === (await getServiceUserId())) throw new ApiError(404, 'NOT_FOUND', 'no such account');
+    if (!target || (await isHiddenService(target.id))) throw new ApiError(404, 'NOT_FOUND', 'no such account');
     if (target.status !== 'active') fail({ email: 'suspended' });
     if (target.id === card.owner) fail({ email: 'is_owner' });
     const { value: expiresOn, error: expiryError } = validateExpiresOn(body.expires_on);
@@ -1268,7 +1293,7 @@ function dayString(msOrDate) {
 
   /** The target account, refusing the service account and unknown ids alike. */
   async function targetUser(id) {
-    if (!UUID_RE.test(id) || id === (await getServiceUserId())) throw new ApiError(404, 'NOT_FOUND');
+    if (!UUID_RE.test(id) || (await isHiddenService(id))) throw new ApiError(404, 'NOT_FOUND');
     const user = await loadUser(id, { fresh: true });
     if (!user) throw new ApiError(404, 'NOT_FOUND');
     return user;
@@ -1293,6 +1318,9 @@ function dayString(msOrDate) {
       throw new ApiError(409, 'SELF_LOCKOUT', 'you cannot change your own role or status');
     }
     const nextRole = data.role ? await assertRole(data.role) : null;
+    if (target.id === (await getServiceUserId()) && ((nextRole && nextRole.name !== ROLE_ADMIN) || (data.status && data.status !== 'active'))) {
+      throw new ApiError(409, 'SERVICE_ACCOUNT', 'this account’s token runs the app; it must stay an active administrator');
+    }
     await assertAdminRemains(target, { nextRoleName: nextRole?.name, nextStatus: data.status });
     if (data.password && epochSupported) data[EPOCH_FIELD] = (Number(target[EPOCH_FIELD]) || 0) + 1;
     // (audit for this change is written after the successful patch below)
@@ -1338,7 +1366,9 @@ function dayString(msOrDate) {
   async function deleteUser({ req, res, url, actor, params }) {
     const target = await targetUser(params.id);
     if (target.id === actor.id) throw new ApiError(409, 'SELF_LOCKOUT', 'you cannot delete your own account');
-    await assertAdminRemains(target, { deleting: true });    const mode = url.searchParams.get('cards') === 'transfer' ? 'transfer' : 'delete';
+    if (target.id === (await getServiceUserId())) throw new ApiError(409, 'SERVICE_ACCOUNT', 'this account’s token runs the app; it cannot be deleted');
+    await assertAdminRemains(target, { deleting: true });
+    const mode = url.searchParams.get('cards') === 'transfer' ? 'transfer' : 'delete';
     const cards = (await directus.request('/items/vcards', { query: { fields: ['id', 'photo'], filter: { owner: { _eq: target.id } }, limit: -1 } })) ?? [];
     // Access rows pointing at the deleted user (as collaborator) are garbage.
     if (accessSupported) {

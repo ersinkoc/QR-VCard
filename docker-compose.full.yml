@@ -1,0 +1,96 @@
+# Complete stack in one command: PostgreSQL + Directus + QR-VCard.
+#
+#   cp .env.full.example .env   # fill in the values (each one is explained there)
+#   docker compose -f docker-compose.full.yml up -d --build
+#
+# On the very first start Directus creates its admin user (DIRECTUS_ADMIN_EMAIL /
+# DIRECTUS_ADMIN_PASSWORD) with DIRECTUS_TOKEN as that user's static token; the
+# app then uses the same token to create the QR-VCard schema. Sign in to the app
+# at PUBLIC_URL/panel with the admin email and password.
+# Full guide: docs/deploy.md
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: directus
+      POSTGRES_USER: directus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U directus -d directus"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  directus:
+    image: directus/directus:12
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      SECRET: ${DIRECTUS_SECRET:?set DIRECTUS_SECRET in .env}
+      PUBLIC_URL: ${DIRECTUS_PUBLIC_URL:-http://localhost:8055}
+      DB_CLIENT: pg
+      DB_HOST: database
+      DB_PORT: "5432"
+      DB_DATABASE: directus
+      DB_USER: directus
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # First start only: the admin account and its static token (= the app's token).
+      ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL:?set DIRECTUS_ADMIN_EMAIL in .env}
+      ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD:?set DIRECTUS_ADMIN_PASSWORD in .env}
+      ADMIN_TOKEN: ${DIRECTUS_TOKEN:?set DIRECTUS_TOKEN in .env}
+      # Browsers never call Directus (the app server does), so no CORS is needed.
+      CORS_ENABLED: "false"
+      TELEMETRY: "false"
+    volumes:
+      - directus_uploads:/directus/uploads
+      - directus_extensions:/directus/extensions
+    ports:
+      # Directus Studio (data admin). Remove this mapping to keep it private.
+      - "${DIRECTUS_PORT:-8055}:8055"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8055/server/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      args:
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-}
+    image: qr-vcard:latest
+    restart: unless-stopped
+    depends_on:
+      directus:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DIRECTUS_URL: http://directus:8055
+      DIRECTUS_TOKEN: ${DIRECTUS_TOKEN}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      QR_API_KEY: ${QR_API_KEY:-}
+      QR_API_URL: ${QR_API_URL:-https://artqrcode.oxog.net}
+      MAX_CARDS_PER_USER: ${MAX_CARDS_PER_USER:-20}
+      BOOTSTRAP_SEED_DEMO: ${BOOTSTRAP_SEED_DEMO:-0}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
+volumes:
+  postgres_data:
+  directus_uploads:
+  directus_extensions:

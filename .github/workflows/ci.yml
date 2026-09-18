@@ -27,3 +27,19 @@ jobs:
       - run: npm run scripts:check
       - run: npm run build
       - run: npm run deploy:check
+
+  # The production image must build and must contain every module the server
+  # imports (a module missing from the image only shows up at deploy time).
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg SOURCE_COMMIT=${{ github.sha }} -t qr-vcard .
+      - name: Server modules load inside the image
+        run: docker run --rm qr-vcard node -e "Promise.all(['./server/api.mjs','./server/qr-handler.mjs','./server/logger.mjs','./scripts/preflight.mjs'].map((m)=>import(m))).then(()=>console.log('modules ok'))"
+      - name: Startup refuses the template configuration with a clear error
+        run: |
+          set +e
+          out=$(docker run --rm --env-file .env.example qr-vcard 2>&1); code=$?
+          echo "$out"
+          test $code -eq 1 && echo "$out" | grep -q "DIRECTUS_TOKEN still holds the template value"

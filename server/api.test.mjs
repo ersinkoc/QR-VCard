@@ -47,6 +47,7 @@ function matches(row, filter) {
 /** A tiny Directus: just the endpoints and query shapes server/api.mjs uses. */
 function fakeDirectus() {
   const db = {
+    serviceId: ID.svc,
     users: [
       { id: ID.svc, email: 'svc@example.com', role: ADMIN_ROLE.id, status: 'active', password: null },
       { id: ID.admin, email: 'admin@example.com', role: ADMIN_ROLE.id, status: 'active', password: 'admin-pass' },
@@ -68,7 +69,7 @@ function fakeDirectus() {
   const newId = () => `00000000-0000-4000-8000-${String(seq++).padStart(12, '0')}`;
 
   async function request(path, { method = 'GET', query = {}, body, auth } = {}) {
-    const actorId = auth === undefined ? ID.svc : typeof auth === 'string' ? auth.replace(/^tok:/, '') : null;
+    const actorId = auth === undefined ? db.serviceId : typeof auth === 'string' ? auth.replace(/^tok:/, '') : null;
     let m;
 
     if (path === '/auth/login') {
@@ -77,7 +78,11 @@ function fakeDirectus() {
       return { access_token: `tok:${user.id}`, refresh_token: 'r' };
     }
     if (path === '/auth/logout') return null;
-    if (path === '/users/me') return { id: actorId };
+    if (path === '/users/me') {
+      // Directus masks a set password and reports null for none.
+      const self = db.users.find((u) => u.id === actorId);
+      return { id: actorId, password: self?.password ? '**********' : null };
+    }
 
     if (path === '/users' && method === 'GET') {
       const q = (query.search ?? '').toLowerCase();
@@ -351,8 +356,7 @@ describe('authentication', () => {
     expect((await call('GET', '/api/cards', { cookie: forged })).status).toBe(401);
   });
 
-  it('never lets the service account sign in', async () => {
-    directus.db.users[0].password = 'svc-pass';
+  it('never lets the password-less service account sign in', async () => {
     expect((await call('POST', '/api/auth/login', { body: { email: 'svc@example.com', password: 'svc-pass' } })).status).toBe(401);
   });
 
@@ -560,6 +564,37 @@ describe('user administration', () => {
     const cookie = await signIn('admin@example.com', 'admin-pass');
     expect((await call('PATCH', `/api/users/${ID.svc}`, { cookie, body: { status: 'suspended' } })).status).toBe(404);
     expect((await call('DELETE', `/api/users/${ID.svc}`, { cookie })).status).toBe(404);
+  });
+
+  describe('when the deployment runs on an administrator’s own token', () => {
+    const ADMIN2 = '00000000-0000-4000-8000-000000000010';
+    beforeEach(() => {
+      directus.db.serviceId = ID.admin;
+      directus.db.users.push({ id: ADMIN2, email: 'admin2@example.com', first_name: null, last_name: null, last_access: null, username: null, qrv_session_epoch: 0, role: ADMIN_ROLE.id, status: 'active', password: 'admin2-pass' });
+    });
+
+    it('lets that administrator sign in and see themselves in the account list', async () => {
+      const cookie = await signIn('admin@example.com', 'admin-pass');
+      expect((await call('GET', '/api/me', { cookie })).status).toBe(200);
+      const emails = (await call('GET', '/api/users', { cookie })).json.data.map((u) => u.email);
+      expect(emails).toContain('admin@example.com');
+      expect((await call('PATCH', `/api/users/${ID.admin}`, { cookie, body: { first_name: 'Root' } })).status).toBe(200);
+    });
+
+    it('refuses to delete, suspend or demote the account whose token runs the app', async () => {
+      const cookie = await signIn('admin2@example.com', 'admin2-pass');
+      const del = await call('DELETE', `/api/users/${ID.admin}`, { cookie });
+      expect(del.status).toBe(409);
+      expect(del.json.error.code).toBe('SERVICE_ACCOUNT');
+      expect((await call('PATCH', `/api/users/${ID.admin}`, { cookie, body: { status: 'suspended' } })).json.error.code).toBe('SERVICE_ACCOUNT');
+      expect((await call('PATCH', `/api/users/${ID.admin}`, { cookie, body: { role: USER_ROLE.id } })).json.error.code).toBe('SERVICE_ACCOUNT');
+      expect((await call('PATCH', `/api/users/${ID.admin}`, { cookie, body: { first_name: 'Still' } })).status).toBe(200);
+    });
+
+    it('counts that administrator when guarding the last admin', async () => {
+      const cookie = await signIn('admin@example.com', 'admin-pass');
+      expect((await call('PATCH', `/api/users/${ADMIN2}`, { cookie, body: { status: 'suspended' } })).status).toBe(200);
+    });
   });
 
   it('deletes an account with its cards, or hands the cards over', async () => {

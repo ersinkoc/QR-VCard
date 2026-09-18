@@ -76,6 +76,11 @@ environment variables and never writes `.env`. The supplied `DIRECTUS_TOKEN` mus
 to a Directus user with Administrator access so it can create or repair the remote schema.
 Set `DIRECTUS_BOOTSTRAP=0` only when schema changes are managed separately.
 
+The token may be your own Directus admin's static token: that admin then signs in to the
+panel as usual, and the app refuses to delete, suspend or demote the account whose token
+runs it (`409 SERVICE_ACCOUNT`). A password-less service account (what local bootstrap
+creates) stays hidden from the panel instead.
+
 ## Roles and what each one can do
 
 | Role (Directus role name) | Cards | Accounts | Seed Account |
@@ -184,6 +189,7 @@ browser ──(HttpOnly cookie)──▶ app server (/api) ──(DIRECTUS_TOKEN
 | `DIRECTUS_URL` | yes | Directus base URL, reached server-to-server |
 | `DIRECTUS_TOKEN` | yes | static token of the service account (bootstrap creates it) |
 | `DIRECTUS_BOOTSTRAP` | optional | `1` (default) provisions/repairs Directus before production startup; `0` disables it |
+| `DIRECTUS_WAIT_SECONDS` | optional | how long production startup waits for Directus to answer, default 120 |
 | `BOOTSTRAP_SEED_DEMO` | optional | production default `0`; set `1` only to create the demo users/cards |
 | `SESSION_SECRET` | recommended | cookie signing key, ≥ 16 chars (`openssl rand -hex 32`); derived from the token when empty |
 | `PUBLIC_URL` | recommended | public address, e.g. `https://kart.example.com`; QR codes encode `PUBLIC_URL/c/<code>`. Usernames add `PUBLIC_URL/<username>` |
@@ -193,8 +199,10 @@ browser ──(HttpOnly cookie)──▶ app server (/api) ──(DIRECTUS_TOKEN
 | `MAX_CARDS_PER_USER` | optional | cards a plain user may own, default 20 |
 | `PORT` | optional | listen port (`npm run start` default 8080; `.env.example` uses 8787 for dev) |
 | `QR_RATE_LIMIT_MAX` / `QR_RATE_LIMIT_WINDOW_MS` | optional | `/api/qr` limit per client, default 30 / 60 s |
+| `QRV_TZ` | optional | time zone of the panel's daily view statistics, default `UTC` |
 
 Nothing is needed at build time; the bundle holds no environment-specific values.
+`npm run doctor` checks a filled-in `.env` — and the Directus it points at — before you deploy.
 
 ## Scripts
 
@@ -209,6 +217,9 @@ Nothing is needed at build time; the bundle holds no environment-specific values
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run scripts:check` | syntax-check every `.mjs` in `scripts/`, `server/`, `directus/` |
 | `npm run deploy:check` | fail a `dist/` that contains a Directus URL or a secret name |
+| `npm run doctor` | validate `.env` and probe Directus + token, exactly as production startup does |
+| `npm run docker:up` | build and start the app container against an existing Directus (`docker-compose.yml`) |
+| `npm run docker:full` | build and start PostgreSQL + Directus + app (`docker-compose.full.yml`) |
 | `npm run smoke` | post-deploy smoke against a running deployment (see below) |
 | `npm run directus:up` / `:down` | start / stop the local Directus container |
 | `npm run directus:bootstrap` | provision Directus (idempotent) |
@@ -220,22 +231,23 @@ Nothing is needed at build time; the bundle holds no environment-specific values
 
 ## Deployment (Docker / Nixpacks)
 
+Step-by-step guide (Coolify, Railway, Compose, troubleshooting): [`docs/deploy.md`](docs/deploy.md).
+
 The root `Dockerfile` and `nixpacks.toml` build one image that provisions Directus
 idempotently and then runs `server/serve.mjs`:
 
 ```bash
-docker build -t qr-vcard .
-docker run -d -p 8080:8080 \
-  -e DIRECTUS_URL=https://directus.example.com -e DIRECTUS_TOKEN=... \
-  -e SESSION_SECRET=... -e QR_API_KEY=... -e TRUST_PROXY=1 \
-  -e PUBLIC_URL=https://kart.example.com qr-vcard
+cp .env.example .env && docker compose up -d --build        # against an existing Directus
+cp .env.full.example .env && docker compose -f docker-compose.full.yml up -d --build   # PostgreSQL + Directus + app
 ```
 
-On a first deployment, the startup step creates the missing QR-VCard collections,
-fields, roles and permissions. On later deployments it safely checks/repairs them.
-It never creates demo users or cards unless `BOOTSTRAP_SEED_DEMO=1` is explicitly set.
-If Directus is unavailable or the token lacks Administrator access, the container exits
-instead of serving a partially configured application.
+Startup (`scripts/start-production.mjs`) validates the variables, waits up to
+`DIRECTUS_WAIT_SECONDS` for Directus, checks that the token is an Administrator's, and
+then creates the missing QR-VCard collections, fields, roles and permissions — or safely
+repairs them on later deployments (retried on transient failures). It never creates demo
+users or cards unless `BOOTSTRAP_SEED_DEMO=1` is explicitly set. Any problem ends the
+start with one `[startup] ERROR:` line naming the variable to fix, instead of serving a
+partially configured application. SIGTERM drains open requests before exiting.
 
 The same image works against any Directus — nothing is baked in, and Directus needs no CORS
 configuration because browsers never call it. Keep HTTPS at the edge (sessions and the PWA

@@ -287,6 +287,7 @@ export const en: Dict = {
     CARD_LIMIT: 'You have reached your card limit ({max}). Delete a card to create a new one.',
     LAST_ADMIN: 'At least one active administrator must remain.',
     SELF_LOCKOUT: 'You cannot change your own role or status, or delete your own account.',
+    SERVICE_ACCOUNT: 'This account’s token runs the app: it must stay an active administrator and cannot be deleted.',
     WRONG_PASSWORD: 'The current password is wrong.',
     PHOTO_TYPE: 'The photo must be a JPEG, PNG or WebP.',
     PHOTO_TOO_LARGE: 'The photo is too large (4 MB at most).',

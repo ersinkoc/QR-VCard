@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bootstrapEnabled, bootstrapEnvironment } from './start-production.mjs';
+import { bootstrapEnabled, bootstrapEnvironment, waitSeconds } from './start-production.mjs';
 
 describe('production startup', () => {
   it('provisions Directus by default', () => {
@@ -20,5 +20,11 @@ describe('production startup', () => {
       BOOTSTRAP_RUNTIME: '1',
       BOOTSTRAP_SEED_DEMO: '0',
     });
+  });
+
+  it('waits 120 s for Directus by default, and honours DIRECTUS_WAIT_SECONDS', () => {
+    expect(waitSeconds({})).toBe(120);
+    expect(waitSeconds({ DIRECTUS_WAIT_SECONDS: '30' })).toBe(30);
+    expect(waitSeconds({ DIRECTUS_WAIT_SECONDS: 'soon' })).toBe(120);
   });
 });
