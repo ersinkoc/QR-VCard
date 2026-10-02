@@ -226,6 +226,8 @@ Nothing is needed at build time; the bundle holds no environment-specific values
 | `npm run directus:verify` | prove the Directus lockdown |
 | `npm run backup` | consistent backup of the Directus DB + photos into `backups/<timestamp>/` (retention: 7 runs) |
 | `npm run restore` | verified, guided restore of a backup (asks `--yes` before touching anything) |
+| `npm run directus:export` | portable export of all app data through the API into `exports/<timestamp>/` (any Directus) |
+| `npm run directus:import` | merge an export into any Directus — bootstraps the schema first when missing |
 | `npm run qr:verify` | probe the QR provider directly |
 | `npm run icons` | regenerate the PWA icons |
 
@@ -280,7 +282,10 @@ DIRECTUS_URL=https://directus.example.com npm run smoke
 The database (accounts, cards) and the uploads volume (photos) are backed up
 together by `npm run backup` and restored by `npm run restore` — verified
 against SHA-256 manifests, with a quarterly drill procedure to prove the backups
-actually restore. Full runbook: [`docs/backup-restore.md`](docs/backup-restore.md).
+actually restore. To move data between Directus instances (any database engine),
+`npm run directus:export` writes a portable API-level archive and
+`npm run directus:import` merges it into a fresh one. Full runbook:
+[`docs/backup-restore.md`](docs/backup-restore.md).
 
 It checks both health endpoints, the SPA routes, the public card, admin sign-in and cookie
 flags, a plain user's isolation (own cards only, 404 on foreign cards, 403 on accounts),

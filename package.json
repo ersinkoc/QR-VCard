@@ -31,7 +31,9 @@
     "directus:verify": "node directus/verify.mjs",
     "directus:start": "docker compose -f directus/docker-compose.yml up",
     "backup": "node scripts/backup-directus.mjs",
-    "restore": "node scripts/restore-directus.mjs"
+    "restore": "node scripts/restore-directus.mjs",
+    "directus:export": "node scripts/export-directus.mjs",
+    "directus:import": "node scripts/import-directus.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

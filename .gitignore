@@ -10,6 +10,8 @@ server/.env
 
 # Backups made by `npm run backup` (data.db snapshots + photo archives)
 backups/
+# API-level exports made by `npm run directus:export` (data.json + files)
+exports/
 
 # Playwright artifacts (test-results, reports) and the throwaway credentials
 test-results/

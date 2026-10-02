@@ -42,6 +42,53 @@ time), so Directus can open it directly — no WAL merge step, no lock on the
 live service beyond one read. The restore script **refuses** a folder whose
 files no longer match the manifest hashes.
 
+## Portable export/import — any Directus, any database
+
+`backup`/`restore` above snapshot Docker **volumes**, which only exists for the
+local dev container (SQLite). To move data between Directus instances — the
+Postgres stack in `docker-compose.full.yml`, a managed Directus, a brand-new
+host — use the API-level export instead:
+
+```bash
+npm run directus:export                          # -> exports/<timestamp>/
+npm run directus:export -- --out=/mnt/qrv --keep=14
+DIRECTUS_URL=... DIRECTUS_TOKEN=... npm run directus:export   # another instance
+
+npm run directus:import -- exports/<timestamp>            # merge (safe to re-run)
+npm run directus:import -- exports/<timestamp> --update   # also overwrite existing
+npm run directus:import -- exports/<timestamp> --password=TempPass123
+```
+
+What an export contains:
+
+```
+exports/<timestamp>/
+  manifest.json   provenance + record counts + SHA-256 of every artifact
+  data.json       users, vcards, qrv_view_days, qrv_card_access, qrv_audit_log,
+                  file metadata — everything the app serves
+  files/<id>      the binary of every directus_files row (card photos)
+```
+
+The import reads `DIRECTUS_URL`/`DIRECTUS_TOKEN` for the **target** (an
+Administrator token, same as the app's), runs `directus/bootstrap.mjs` when the
+schema is missing — so a completely empty Directus is enough — then recreates
+files, users, cards and the `qrv_*` tables in dependency order, mapping the
+source ids onto whatever ids the target assigns. Rows match on their natural
+key (email, card code, card+day, card+user), so a second run changes nothing.
+
+Limits of the API path, by design:
+
+- **Passwords do not transfer.** Directus re-hashes `password` on every write;
+  imported users get a generated password saved to
+  `exports/<timestamp>/import-credentials.txt` (or the `--password` value).
+  To keep original passwords, restore the database itself (volume restore, or
+  a DB dump for Postgres).
+- **`token` and `tfa_secret` are never exported/imported** — clobbering the
+  service token would break the running app.
+- **`date_created`/`user_created` always stamp "now"** — the API owns those
+  columns. Only a database-level restore preserves original timestamps.
+- The export contains password hashes — treat the folder like the database.
+
 ## How often, and where
 
 - **Daily** on any real deployment: a cron line is enough, e.g. on the host:
