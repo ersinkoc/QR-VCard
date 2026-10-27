@@ -20,6 +20,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = join(HERE, '.env');
 /** The app server's env file — where DIRECTUS_URL / DIRECTUS_TOKEN are written. */
 const ROOT_ENV_PATH = join(HERE, '..', '.env');
+const DESIGN_IDS = ['executive', 'ledger', 'diplomat', 'summit', 'alpine', 'editorial', 'atelier', 'archive', 'gallery', 'studio', 'signal', 'noir', 'monolith', 'midnight', 'cobalt', 'prism', 'aurora', 'ember', 'bloom', 'copper', 'terminal', 'blueprint', 'grid', 'kinetic', 'orbit', 'forest', 'marine', 'contour', 'horizon', 'ivory'];
+const DESIGN_CHOICES = DESIGN_IDS.map((value) => ({ text: value[0].toUpperCase() + value.slice(1), value }));
 
 function readRootEnv() {
   if (!existsSync(ROOT_ENV_PATH)) return {};
@@ -170,7 +172,9 @@ async function main() {
           { field: 'address', type: 'text', meta: { interface: 'input-multiline', options: { placeholder: 'Street, city…' } } },
           { field: 'note', type: 'text', meta: { interface: 'input-multiline' } },
           { field: 'accent_color', type: 'string', meta: { interface: 'select-color', default_value: '#4f46e5' }, schema: { default_value: '#4f46e5' } },
+          { field: 'design_style', type: 'string', meta: { interface: 'select-dropdown', options: { choices: DESIGN_CHOICES }, default_value: 'executive', width: 'half' }, schema: { default_value: 'executive', max_length: 16 } },
           { field: 'photo', type: 'uuid', meta: { special: ['file'], interface: 'file-image' } },
+          { field: 'logo', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Corporate logo shown alongside the person photo' } },
         ],
       },
     });
@@ -348,6 +352,34 @@ async function main() {
       },
     });
     console.log('[bootstrap] field vcards.photo_style created');
+  }
+
+  const hasLogo = await api('/fields/vcards/logo', { token: adminToken }).then(() => true, () => false);
+  if (!hasLogo) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'logo', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Corporate logo shown alongside the person photo' } },
+    });
+    console.log('[bootstrap] field vcards.logo created');
+  }
+
+  const hasDesignStyle = await api('/fields/vcards/design_style', { token: adminToken }).then(() => true, () => false);
+  if (!hasDesignStyle) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        field: 'design_style',
+        type: 'string',
+        meta: { interface: 'select-dropdown', options: { choices: DESIGN_CHOICES }, width: 'half' },
+        schema: { default_value: 'executive', max_length: 16 },
+      },
+    });
+    console.log('[bootstrap] field vcards.design_style created');
+  } else {
+    await api('/fields/vcards/design_style', { method: 'PATCH', token: adminToken, body: { meta: { interface: 'select-dropdown', options: { choices: DESIGN_CHOICES }, width: 'half' } } });
+    console.log(`[bootstrap] field vcards.design_style choices updated (${DESIGN_CHOICES.length})`);
   }
 
   // Social profile fields: added after the first release, so installs created

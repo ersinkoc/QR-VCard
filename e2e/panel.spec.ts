@@ -160,4 +160,35 @@ test.describe('panel main flows', () => {
     rmSync(file, { force: true });
     await signOut(page);
   });
+
+  test('corporate logo upload is independent and publicly served', async ({ page, accounts }) => {
+    await signIn(page, accounts.user);
+    await page.getByRole('button', { name: 'New card' }).click();
+    await page.getByLabel('First name').fill('E2E');
+    await page.getByLabel('Last name').fill('Logo');
+    await page.getByLabel('Organization').fill('E2E Brand House');
+    await page.getByRole('button', { name: /Terminal/ }).click();
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    const file = join(tmpdir(), `e2e-logo-${Date.now()}.png`);
+    writeFileSync(file, png);
+    await page.locator('input[type=file]').last().setInputFiles(file);
+    await page.getByRole('button', { name: 'Save card' }).click();
+    await expect(page.getByText('Card saved.')).toBeVisible();
+
+    const listing = await page.request.get('/api/cards');
+    const card = ((await listing.json()) as { data: { id: string; code: string; last_name: string | null; photo: string | null; logo: string | null; design_style: string | null }[] }).data.find((row) => row.last_name === 'Logo');
+    expect(card?.logo).toBeTruthy();
+    expect(card?.photo).toBeNull();
+    expect(card?.design_style).toBe('terminal');
+    expect((await page.request.get(`/api/cards/${card!.id}/logo`)).status()).toBe(200);
+
+    await page.getByRole('button', { name: 'Publish' }).first().click();
+    await expect(page.getByText('Published', { exact: true }).first()).toBeVisible();
+    expect((await page.request.get(`/api/public/cards/${card!.code}/logo`)).status()).toBe(200);
+    await page.getByRole('button', { name: 'Delete' }).first().click();
+    await page.getByRole('button', { name: 'Delete' }).last().click();
+    await expect(page.getByText('Card deleted.')).toBeVisible();
+    rmSync(file, { force: true });
+    await signOut(page);
+  });
 });

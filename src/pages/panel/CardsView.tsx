@@ -9,6 +9,7 @@ import { cardPhotoUrl, deleteCard, displayName, fetchViewTrend, isPrivileged, li
 import CardForm from './CardForm';
 import QrModal from './QrModal';
 import ShareModal from './ShareModal';
+import SignatureModal from './SignatureModal';
 import TrendChart from './TrendChart';
 import { useSession } from './session';
 
@@ -37,6 +38,7 @@ export default function CardsView() {
   const [qrCard, setQrCard] = useState<Card | null>(null);
   const [deleting, setDeleting] = useState<Card | null>(null);
   const [sharing, setSharing] = useState<Card | null>(null);
+  const [signatureCard, setSignatureCard] = useState<Card | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [trend, setTrend] = useState<ViewTrend | null>(null);
   const formRef = useRef<HTMLDivElement>(null);
@@ -198,7 +200,7 @@ export default function CardsView() {
             onSaved={(card, warning) => {
               upsert(card);
               setEditing(null);
-              setNotice(warning ? t('cards.photoWarning', { reason: errorText(t, warning) }) : t('cards.saved'));
+              setNotice(warning ? t('cards.assetWarning', { reason: errorText(t, warning) }) : t('cards.saved'));
             }}
           />
         </div>
@@ -295,6 +297,9 @@ export default function CardsView() {
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSharing(card)}>
                       {t('cards.share')}
                     </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSignatureCard(card)}>
+                      {t('cards.signature')}
+                    </button>
                     <CopyButton text={url} label={t('common.copyUrl')} className="btn btn-secondary btn-sm" />
                     <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void togglePublish(card)}>
                       {card.status === 'published' ? t('cards.unpublish') : t('cards.publish')}
@@ -333,6 +338,8 @@ export default function CardsView() {
       {qrCard && <QrModal card={qrCard} onClose={() => setQrCard(null)} />}
 
       {sharing && <ShareModal card={sharing} canManage={canShare(sharing)} onClose={() => setSharing(null)} onSaved={upsert} />}
+
+      {signatureCard && <SignatureModal card={signatureCard} onClose={() => setSignatureCard(null)} />}
 
       {deleting && (
         <Modal

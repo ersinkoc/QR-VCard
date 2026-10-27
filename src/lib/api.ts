@@ -4,7 +4,10 @@
  * cookie the server sets, so no credential is ever readable by scripts.
  */
 
+import type { CardDesign } from './card-designs';
+
 export type RoleKind = 'admin' | 'editor' | 'user';
+export type { CardDesign } from './card-designs';
 
 export interface Me {
   id: string;
@@ -47,6 +50,8 @@ export interface CardContent {
   accent_color: string | null;
   /** How the image is framed: a round, cropped photo or an uncropped logo. */
   photo_style: 'avatar' | 'logo' | null;
+  /** Visual system used by the public card and generated brand assets. */
+  design_style: CardDesign | null;
 }
 
 export interface Card extends CardContent {
@@ -55,6 +60,8 @@ export interface Card extends CardContent {
   code: string;
   /** Photo file id (cache-buster), or null. */
   photo: string | null;
+  /** Separate corporate logo file; it can coexist with the person's photo. */
+  logo: string | null;
   /** Public page views counted by the server (panel previews excluded). */
   qrv_views: number;
   /** Answers the owner's /<username> short URL (one per owner). */
@@ -71,6 +78,7 @@ export interface Card extends CardContent {
 export interface PublicCard extends CardContent {
   code: string;
   photo: string | null;
+  logo: string | null;
 }
 
 export interface AdminUser extends Me {
@@ -197,9 +205,15 @@ export const removeCardShare = (id: string, userId: string) =>
 
 export const uploadCardPhoto = (id: string, image: Blob) => request<Card>('POST', `/api/cards/${id}/photo`, image);
 export const deleteCardPhoto = (id: string) => request<Card>('DELETE', `/api/cards/${id}/photo`);
+export const uploadCardLogo = (id: string, image: Blob) => request<Card>('POST', `/api/cards/${id}/logo`, image);
+export const deleteCardLogo = (id: string) => request<Card>('DELETE', `/api/cards/${id}/logo`);
 
 export function cardPhotoUrl(card: Pick<Card, 'id' | 'photo'>): string | null {
   return card.photo ? `/api/cards/${card.id}/photo?v=${card.photo.slice(0, 8)}` : null;
+}
+
+export function cardLogoUrl(card: Pick<Card, 'id' | 'logo'>): string | null {
+  return card.logo ? `/api/cards/${card.id}/logo?v=${card.logo.slice(0, 8)}` : null;
 }
 
 /** A published card by its short code, or null when there is none. */
@@ -225,6 +239,11 @@ export async function fetchPublicUserCard(username: string): Promise<PublicCard 
 export function publicPhotoUrl(card: Pick<PublicCard, 'code' | 'photo'>, format?: 'jpg'): string | null {
   if (!card.photo) return null;
   return `/api/public/cards/${encodeURIComponent(card.code)}/photo?v=${card.photo}${format ? `&format=${format}` : ''}`;
+}
+
+export function publicLogoUrl(card: Pick<PublicCard, 'code' | 'logo'>, format?: 'jpg'): string | null {
+  if (!card.logo) return null;
+  return `/api/public/cards/${encodeURIComponent(card.code)}/logo?v=${card.logo}${format ? `&format=${format}` : ''}`;
 }
 
 // --- users (admin) ------------------------------------------------------------------

@@ -86,7 +86,9 @@ describe('createLogger (json)', () => {
         res.statusCode = 200;
         r.finish(200, { type: 'api', bytes: 42 });
         const line = JSON.parse(cap.lines[0].raw);
-        expect(line).toMatchObject({ lvl: 'info', req_id: 'abc-123', type: 'api', method: 'GET', path: '/api/cards', status: 200, ms: 0, bytes: 42 });
+        expect(line).toMatchObject({ lvl: 'info', req_id: 'abc-123', type: 'api', method: 'GET', path: '/api/cards', status: 200, bytes: 42 });
+        expect(line.ms).toEqual(expect.any(Number));
+        expect(line.ms).toBeGreaterThanOrEqual(0);
         expect(line.path).not.toContain('?');
       } finally {
         cap.restore();

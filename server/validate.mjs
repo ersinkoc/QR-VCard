@@ -23,6 +23,7 @@ export const CARD_LIMITS = {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^\+?[0-9][0-9 ().\-/]{2,}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+export const CARD_DESIGNS = new Set(['executive', 'ledger', 'diplomat', 'summit', 'alpine', 'editorial', 'atelier', 'archive', 'gallery', 'studio', 'signal', 'noir', 'monolith', 'midnight', 'cobalt', 'prism', 'aurora', 'ember', 'bloom', 'copper', 'terminal', 'blueprint', 'grid', 'kinetic', 'orbit', 'forest', 'marine', 'contour', 'horizon', 'ivory']);
 /** A handle as people actually type it: with or without @, dots/underscores allowed. */
 const SOCIAL_HANDLE_RE = /^@?[A-Za-z0-9._-]{1,64}$/;
 /** A bare number as people paste it: optional +, 7–15 digits. */
@@ -203,6 +204,11 @@ export function validateCardInput(input, { partial = false } = {}) {
   if ('photo_style' in src) {
     if (src.photo_style === 'avatar' || src.photo_style === 'logo') data.photo_style = src.photo_style;
     else errors.photo_style = 'invalid';
+  }
+
+  if ('design_style' in src) {
+    if (CARD_DESIGNS.has(src.design_style)) data.design_style = src.design_style;
+    else errors.design_style = 'invalid';
   }
 
   if (!partial && !data.first_name && !data.last_name && !data.organization && !errors.first_name) {

@@ -1,0 +1,36 @@
+export const CARD_DESIGNS = [
+  { id: 'executive', label: 'Executive', family: 'Corporate', swatch: 'linear-gradient(90deg,var(--swatch-accent) 0 24%,#fff 24%)' },
+  { id: 'ledger', label: 'Ledger', family: 'Corporate', swatch: 'repeating-linear-gradient(0deg,#f7f4ed 0 7px,#d8d1c4 8px)' },
+  { id: 'diplomat', label: 'Diplomat', family: 'Corporate', swatch: 'linear-gradient(135deg,#14213d 0 45%,#f4ead5 45%)' },
+  { id: 'summit', label: 'Summit', family: 'Corporate', swatch: 'linear-gradient(155deg,#edf3ee 0 58%,var(--swatch-accent) 58%)' },
+  { id: 'alpine', label: 'Alpine', family: 'Corporate', swatch: 'linear-gradient(155deg,#eef7fa 0 55%,#2f6975 55%)' },
+  { id: 'editorial', label: 'Editorial', family: 'Editorial', swatch: 'linear-gradient(135deg,#f2eadb 0 60%,var(--swatch-accent) 60%)' },
+  { id: 'atelier', label: 'Atelier', family: 'Editorial', swatch: 'linear-gradient(90deg,#e9ddd0 0 72%,#b44a3c 72%)' },
+  { id: 'archive', label: 'Archive', family: 'Editorial', swatch: 'repeating-linear-gradient(90deg,#efe5cf 0 5px,#c7b99c 6px)' },
+  { id: 'gallery', label: 'Gallery', family: 'Editorial', swatch: 'linear-gradient(135deg,#fff 0 70%,#171717 70%)' },
+  { id: 'studio', label: 'Studio', family: 'Editorial', swatch: 'linear-gradient(90deg,#faf7f1 0 50%,#e9d3a7 50%)' },
+  { id: 'signal', label: 'Signal', family: 'Dark', swatch: 'linear-gradient(135deg,#111722 0 72%,var(--swatch-accent) 72%)' },
+  { id: 'noir', label: 'Noir', family: 'Dark', swatch: 'linear-gradient(135deg,#090909 0 76%,#d9bd74 76%)' },
+  { id: 'monolith', label: 'Monolith', family: 'Dark', swatch: 'linear-gradient(90deg,#181818 0 62%,#777 62%)' },
+  { id: 'midnight', label: 'Midnight', family: 'Dark', swatch: 'radial-gradient(circle at 70% 30%,#33456d,#0b1020 65%)' },
+  { id: 'cobalt', label: 'Cobalt', family: 'Dark', swatch: 'linear-gradient(145deg,#102c72 0 70%,#dbe7ff 70%)' },
+  { id: 'prism', label: 'Prism', family: 'Chromatic', swatch: 'conic-gradient(from 45deg,#ff6b6b,#ffd166,#06d6a0,#4d96ff,#ff6b6b)' },
+  { id: 'aurora', label: 'Aurora', family: 'Chromatic', swatch: 'linear-gradient(135deg,#12263a,#21a179 55%,#d4f2db)' },
+  { id: 'ember', label: 'Ember', family: 'Chromatic', swatch: 'linear-gradient(145deg,#33140d 0 50%,#ed6a2c 50%)' },
+  { id: 'bloom', label: 'Bloom', family: 'Chromatic', swatch: 'radial-gradient(circle at 30% 35%,#ff91b8 0 22%,#f9e3ea 23%)' },
+  { id: 'copper', label: 'Copper', family: 'Chromatic', swatch: 'linear-gradient(135deg,#472b25 0 45%,#bd7655 45%,#f1dfcf 100%)' },
+  { id: 'terminal', label: 'Terminal', family: 'Technical', swatch: 'repeating-linear-gradient(0deg,#07140d 0 4px,#0d2a19 5px)' },
+  { id: 'blueprint', label: 'Blueprint', family: 'Technical', swatch: 'repeating-linear-gradient(90deg,#164e86 0 6px,#2d679c 7px)' },
+  { id: 'grid', label: 'Grid', family: 'Technical', swatch: 'repeating-linear-gradient(45deg,#f4f4f0 0 5px,#151515 6px 7px)' },
+  { id: 'kinetic', label: 'Kinetic', family: 'Technical', swatch: 'linear-gradient(120deg,#f4f1e8 0 42%,var(--swatch-accent) 42% 58%,#191919 58%)' },
+  { id: 'orbit', label: 'Orbit', family: 'Technical', swatch: 'radial-gradient(circle,#f5f5f2 0 28%,var(--swatch-accent) 29% 34%,#151a24 35%)' },
+  { id: 'forest', label: 'Forest', family: 'Organic', swatch: 'linear-gradient(145deg,#10291e 0 58%,#a8c686 58%)' },
+  { id: 'marine', label: 'Marine', family: 'Organic', swatch: 'linear-gradient(160deg,#dff3f2 0 58%,#126e82 58%)' },
+  { id: 'contour', label: 'Contour', family: 'Organic', swatch: 'repeating-radial-gradient(ellipse at 20% 70%,#ede8dc 0 4px,#9a8f7a 5px)' },
+  { id: 'horizon', label: 'Horizon', family: 'Organic', swatch: 'linear-gradient(0deg,#d6c6a8 0 45%,#91b6c8 45%)' },
+  { id: 'ivory', label: 'Ivory', family: 'Organic', swatch: 'linear-gradient(135deg,#fffdf4 0 72%,#b5a27b 72%)' },
+] as const;
+
+export type CardDesign = (typeof CARD_DESIGNS)[number]['id'];
+
+export const CARD_DESIGN_IDS = CARD_DESIGNS.map((design) => design.id) as CardDesign[];

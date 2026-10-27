@@ -8,9 +8,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'public');
 
-const BG = [25, 25, 33]; // dark ink (oklch 18% 0.01 260 approximation)
-const FG = [111, 122, 247]; // accent indigo (oklch 58% 0.16 264 approximation)
-const WHITE = [251, 251, 253];
+const COBALT = [36, 87, 245];
+const WHITE = [255, 255, 255];
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -53,15 +52,6 @@ function encodePng(width, height, pixels) {
   return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 
-function mulberry32(seed) {
-  return () => {
-    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function drawIcon(size, { maskable = false } = {}) {
   const px = new Uint8Array(size * size * 4);
   const set = (x, y, [r, g, b], a = 255) => {
@@ -73,36 +63,27 @@ function drawIcon(size, { maskable = false } = {}) {
     for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) set(xx, yy, c, a);
   };
 
-  fill(0, 0, size, size, maskable ? BG : FG);
-
-  const inset = maskable ? Math.round(size * 0.18) : 0;
-  const inner = size - inset * 2;
-  const grid = maskable ? 0 : Math.round(size * 0.06); // code area padding on colored bg
-
-  // QR-style finder squares (top-left, top-right, bottom-left)
-  const fs = Math.round(inner * 0.30);
-  const positions = maskable
-    ? [[inset, inset], [size - inset - fs, inset], [inset, size - inset - fs]]
-    : [[grid, grid], [size - grid - fs, grid], [grid, size - grid - fs]];
-  for (const [fx, fy] of positions) {
-    fill(fx, fy, fs, fs, maskable ? FG : WHITE);
-    const bar = Math.round(fs * 0.22);
-    fill(fx + bar, fy + bar, fs - bar * 2, fs - bar * 2, BG);
-    const dot = Math.round(fs * 0.42);
-    const off = Math.round((fs - dot) / 2);
-    fill(fx + off, fy + off, dot, dot, maskable ? FG : WHITE);
-  }
-
-  // deterministic data dots in the remaining area
-  const rng = mulberry32(42);
-  const cell = Math.max(2, Math.round(inner / 22));
-  const field = maskable ? { x: inset, y: inset, s: inner } : { x: grid, y: grid, s: size - grid * 2 };
-  for (let gy = field.y; gy < field.y + field.s - cell; gy += cell) {
-    for (let gx = field.x; gx < field.x + field.s - cell; gx += cell) {
-      const inFinder = positions.some(([fx, fy]) => gx < fx + fs + cell && gy < fy + fs + cell && gx + cell > fx - cell && gy + cell > fy - cell);
-      if (!inFinder && rng() > 0.55) fill(gx + 1, gy + 1, cell - 2, cell - 2, maskable ? FG : WHITE, 235);
-    }
-  }
+  fill(0, 0, size, size, COBALT);
+  const content = size * (maskable ? 0.58 : 0.72);
+  const unit = content / 32;
+  const origin = (size - content) / 2;
+  const box = (x, y, w, h) => fill(Math.round(origin + x * unit), Math.round(origin + y * unit), Math.round(w * unit), Math.round(h * unit), WHITE);
+  const outline = (x, y, side) => {
+    const stroke = 2.6;
+    box(x, y, side, stroke);
+    box(x, y + side - stroke, side, stroke);
+    box(x, y, stroke, side);
+    box(x + side - stroke, y, stroke, side);
+  };
+  outline(0, 0, 10);
+  outline(22, 0, 10);
+  outline(0, 22, 10);
+  box(22, 22, 4, 4);
+  box(28, 22, 4, 4);
+  box(22, 28, 4, 4);
+  box(28, 28, 4, 4);
+  box(9, 8, 14, 2.6);
+  box(8, 9, 2.6, 14);
   return px;
 }
 

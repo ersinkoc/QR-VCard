@@ -20,11 +20,19 @@ export default async function globalTeardown() {
     const env = readRootEnv();
     const base = (env.DIRECTUS_URL || 'http://localhost:8055').replace(/\/+$/, '');
     const api = directusClient(base, env.DIRECTUS_TOKEN || '');
-    for (const { email } of [accounts.admin, accounts.editor, accounts.user]) {
-      const rows = (await api.request('/users', { query: { 'filter[email][_eq]': email, 'fields': 'id', 'limit': '1' } })) as { id: string }[];
-      if (rows?.[0]) await api.request(`/users/${rows[0].id}`, { method: 'DELETE' });
+    const rows = (await api.request('/users', { query: { 'filter[email][_starts_with]': 'e2e-', 'fields': 'id,email', 'limit': '-1' } })) as { id: string; email: string }[];
+    const disposable = rows.filter((user) => /^e2e-(?:admin|editor|user|probe)-[a-z0-9]+@example\.com$/i.test(user.email));
+    for (const user of disposable) {
+      const cards = (await api.request('/items/vcards', { query: { 'filter[owner][_eq]': user.id, 'fields': 'id,photo,logo', 'limit': '-1' } })) as { id: string; photo?: string | null; logo?: string | null }[];
+      for (const card of cards) {
+        await api.request(`/items/vcards/${card.id}`, { method: 'DELETE' });
+        for (const fileId of [card.photo, card.logo].filter(Boolean)) {
+          await api.request(`/files/${fileId}`, { method: 'DELETE' }).catch(() => null);
+        }
+      }
+      await api.request(`/users/${user.id}`, { method: 'DELETE' });
     }
-    process.stdout.write('[e2e] teardown: accounts deleted\n');
+    process.stdout.write(`[e2e] teardown: ${disposable.length} test account(s) deleted\n`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stdout.write(`[e2e] teardown: could not delete accounts (${message}) — delete ${accounts.admin.email} etc. manually\n`);

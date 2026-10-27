@@ -76,6 +76,49 @@ test.describe('post-deploy smoke', () => {
     expect(card).not.toHaveProperty('id');
   });
 
+  test('a public card without a person photo still exports a contact image', async ({ page, request }) => {
+    const card = await request.get(`${base}/api/public/cards/demo-admin`);
+    if (card.status() === 404) {
+      test.skip(true, 'demo-admin is not published on this instance');
+      return;
+    }
+    const data = ((await card.json()) as { data: { photo: string | null } }).data;
+    test.skip(Boolean(data.photo), 'demo-admin has an uploaded photo; no generated fallback to exercise');
+
+    await page.goto(`${base}/c/demo-admin`);
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: /Add to contacts|Rehbere ekle/ }).click();
+    const download = await downloadPromise;
+    const stream = await download.createReadStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    const vcf = Buffer.concat(chunks).toString('utf8').replace(/\r\n /g, '');
+    const encoded = /^PHOTO;ENCODING=b;TYPE=JPEG:(.+)$/m.exec(vcf)?.[1]?.trim() ?? '';
+    expect(encoded.length).toBeGreaterThan(1000);
+    expect(Buffer.from(encoded, 'base64').subarray(0, 3).toString('hex')).toBe('ffd8ff');
+  });
+
+  test('a card without photo or logo generates a branded contact monogram', async ({ page }) => {
+    await page.route('**/api/public/cards/generated-contact-probe', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ data: {
+        code: 'generated-contact-probe', first_name: 'Aylin', last_name: 'Demir', organization: 'Northstar Studio', job_title: 'Director',
+        phone: null, email: 'aylin@example.com', website: null, linkedin: null, instagram: null, whatsapp: null, telegram: null,
+        address: null, note: null, accent_color: '#2457f5', photo: null, logo: null, photo_style: 'avatar', design_style: 'signal',
+      } }),
+    }));
+    await page.goto(`${base}/c/generated-contact-probe`);
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: /Add to contacts|Rehbere ekle/ }).click();
+    const stream = await (await downloadPromise).createReadStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    const vcf = Buffer.concat(chunks).toString('utf8').replace(/\r\n /g, '');
+    const encoded = /^PHOTO;ENCODING=b;TYPE=JPEG:(.+)$/m.exec(vcf)?.[1]?.trim() ?? '';
+    expect(Buffer.from(encoded, 'base64').length).toBeGreaterThan(5_000);
+    expect(Buffer.from(encoded, 'base64').subarray(0, 3).toString('hex')).toBe('ffd8ff');
+  });
+
   test('admin signs in, keeps a hardened cookie and administers', async ({ request }) => {
     const email = process.env.PANEL_EMAIL ?? 'admin@local.dev';
     const password = process.env.PANEL_PASSWORD ?? 'vcard-admin';
@@ -124,7 +167,16 @@ test.describe('post-deploy smoke', () => {
     const listing = await request.get(`${base}/api/cards`);
     expect(listing.status()).toBe(200);
     const mine = ((await listing.json()) as { data: CardRow[] }).data;
-    expect(mine.filter((c) => (c.owner?.id ?? null) !== me.id), 'a foreign card leaked into the user listing').toHaveLength(0);
+    // Plain-user DTOs intentionally omit `owner`; prove ownership by matching
+    // their ids against the administrator's owner-bearing view instead.
+    if (allCards.length > 0) {
+      const ownedIds = new Set(allCards.filter((c) => c.owner?.id === me.id).map((c) => c.id));
+      expect(mine.filter((c) => !ownedIds.has(c.id)), 'a foreign card leaked into the user listing').toHaveLength(0);
+    } else {
+      // Without working admin credentials, any owner the API does expose must
+      // still be the signed-in user (the usual DTO omits it altogether).
+      expect(mine.filter((c) => c.owner && c.owner.id !== me.id), 'a foreign card leaked into the user listing').toHaveLength(0);
+    }
 
     const foreign = allCards.find((c) => c.owner?.id !== me.id);
     test.skip(!foreign, 'no card owned by someone else exists (or admin credentials were not given)');

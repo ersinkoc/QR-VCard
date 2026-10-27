@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
+const e2ePort = Number.parseInt(process.env.E2E_PORT ?? '', 10) || 4173;
+
 /**
  * Two projects share this config:
  *
@@ -25,7 +27,7 @@ export default defineConfig({
   retries: 0,
   reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: `http://127.0.0.1:${e2ePort}`,
     trace: 'retain-on-failure',
     locale: 'en-GB',
   },
@@ -34,8 +36,8 @@ export default defineConfig({
     { name: 'smoke', testMatch: /smoke\.spec\.ts/ },
   ],
   webServer: {
-    command: 'npx cross-env PORT=4173 node --env-file-if-exists=.env server/serve.mjs',
-    port: 4173,
+    command: `npx cross-env PORT=${e2ePort} node --env-file-if-exists=.env server/serve.mjs`,
+    port: e2ePort,
     timeout: 30_000,
     reuseExistingServer: !process.env.CI,
     stdout: 'ignore',

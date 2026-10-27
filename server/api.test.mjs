@@ -454,6 +454,20 @@ describe('card isolation for plain users', () => {
     const r = await call('POST', `/api/cards/${ID.adaCard}/photo`, { cookie, body: Buffer.from('<svg onload=alert(1)>') });
     expect(r.status).toBe(415);
   });
+
+  it('stores a corporate logo separately from the person photo', async () => {
+    const cookie = await signIn('ada@example.com', 'ada-pass');
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const uploaded = await call('POST', `/api/cards/${ID.adaCard}/logo`, { cookie, body: png });
+    expect(uploaded.status).toBe(200);
+    expect(uploaded.json.data.logo).toBeTruthy();
+    expect(uploaded.json.data.photo).toBeNull();
+    expect(directus.db.cards.find((card) => card.id === ID.adaCard).logo).toBe(uploaded.json.data.logo);
+
+    const removed = await call('DELETE', `/api/cards/${ID.adaCard}/logo`, { cookie });
+    expect(removed.status).toBe(200);
+    expect(removed.json.data.logo).toBeNull();
+  });
 });
 
 describe('privileged roles', () => {
@@ -750,6 +764,25 @@ describe('public card page', () => {
     expect(r.status).toBe(200);
     expect(r.json.data.qrv_views).toBeUndefined();
 
+    const ada = await signIn('ada@example.com', 'ada-pass');
+    expect((await call('GET', '/api/cards', { cookie: ada })).status).toBe(200);
+  });
+
+  it('uses the default design when the design_style column is missing (pre-bootstrap installs)', async () => {
+    const plain = fakeDirectus();
+    const strict = {
+      request(path, opts = {}) {
+        if (JSON.stringify(opts.query ?? {}).includes('design_style')) {
+          throw new DirectusError(400, 'INVALID_QUERY', 'design_style does not exist in this collection');
+        }
+        return plain.request(path, opts);
+      },
+    };
+    api = createApiHandler({ directus: strict, sessionSecret: 'test-secret-0123456789', log: { warn() {}, error() {} } });
+
+    const publicCard = await call('GET', '/api/public/cards/adaCard');
+    expect(publicCard.status).toBe(200);
+    expect(publicCard.json.data.design_style).toBeNull();
     const ada = await signIn('ada@example.com', 'ada-pass');
     expect((await call('GET', '/api/cards', { cookie: ada })).status).toBe(200);
   });

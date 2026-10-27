@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeSocial, validateCardInput } from './validate.mjs';
+import { CARD_DESIGNS, normalizeSocial, validateCardInput } from './validate.mjs';
 
 describe('normalizeSocial', () => {
   it('builds the canonical URL from a bare handle', () => {
@@ -69,5 +69,19 @@ describe('validateCardInput social fields', () => {
     expect(errors).toEqual({});
     expect(data.instagram).toBeNull();
     expect('linkedin' in data).toBe(false);
+  });
+});
+
+describe('validateCardInput design style', () => {
+  it('offers exactly thirty stable template ids and accepts every one', () => {
+    expect(CARD_DESIGNS.size).toBe(30);
+    for (const design_style of CARD_DESIGNS) {
+      expect(validateCardInput({ design_style }, { partial: true })).toEqual({ data: { design_style }, errors: {} });
+    }
+  });
+
+  it('accepts supported card designs and rejects unknown values', () => {
+    expect(validateCardInput({ design_style: 'editorial' }, { partial: true })).toEqual({ data: { design_style: 'editorial' }, errors: {} });
+    expect(validateCardInput({ design_style: 'neon' }, { partial: true })).toEqual({ data: {}, errors: { design_style: 'invalid' } });
   });
 });

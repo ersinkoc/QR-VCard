@@ -1,5 +1,16 @@
 # QR-VCard
 
+QR-VCard turns a contact profile into a cohesive digital identity: thirty responsive public-card templates, QR sharing, a scalable brand mark, and an email-signature studio that exports PNG and email-safe HTML.
+
+## Brand and card design
+
+- **30 templates across six families** — Corporate, Editorial, Dark, Chromatic, Technical, and Organic.
+- Existing Executive, Editorial, and Signal cards remain compatible; twenty-seven additional templates expand the catalog.
+- Every design uses the card's accent colour, photo or logo, and contact data consistently.
+- A corporate logo can be uploaded independently from the person photo and is reused on the public card, email signature, and contact-image fallback.
+- The panel's signature studio renders a 1200×360 PNG and copies rich HTML for email clients.
+- Existing installations must run `npm run directus:bootstrap` once to add the idempotent `design_style` field before saving the new design selection.
+
 Digital business cards with QR codes. **Administrators** manage everything — every
 card and every account. **Users** create and manage only their own cards and share
 them as QR codes that resolve to a short URL (`/c/<code>`). Opening that URL shows

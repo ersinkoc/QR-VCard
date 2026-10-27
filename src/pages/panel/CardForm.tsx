@@ -1,11 +1,12 @@
 import { useEffect, useId, useState } from 'react';
-import type { FormEvent } from 'react';
-import Avatar from '../../components/Avatar';
+import type { CSSProperties, FormEvent } from 'react';
+import CardIdentity from '../../components/CardIdentity';
 import Field from '../../components/Field';
 import { errorText, fieldErrorTexts, isApiError, useI18n } from '../../i18n';
-import type { AdminUser, Card, CardInput } from '../../lib/api';
-import { cardPhotoUrl, createCard, deleteCardPhoto, displayName, listUsers, shortUrl, updateCard, uploadCardPhoto } from '../../lib/api';
+import type { AdminUser, Card, CardDesign, CardInput } from '../../lib/api';
+import { cardLogoUrl, cardPhotoUrl, createCard, deleteCardLogo, deleteCardPhoto, displayName, listUsers, shortUrl, updateCard, uploadCardLogo, uploadCardPhoto } from '../../lib/api';
 import { shrinkImage } from '../../lib/image';
+import { CARD_DESIGNS } from '../../lib/card-designs';
 import { useSession } from './session';
 
 const ACCENTS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#db2777', '#18181b'];
@@ -56,7 +57,11 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [removePhoto, setRemovePhoto] = useState(false);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [removeLogo, setRemoveLogo] = useState(false);
   const [photoStyle, setPhotoStyle] = useState<'avatar' | 'logo'>(initial?.photo_style === 'logo' ? 'logo' : 'avatar');
+  const [designStyle, setDesignStyle] = useState<CardDesign>(initial?.design_style ?? 'executive');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
@@ -77,8 +82,19 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
     return () => URL.revokeObjectURL(url);
   }, [photoFile]);
 
+  useEffect(() => {
+    if (!logoFile) {
+      setLogoPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(logoFile);
+    setLogoPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [logoFile]);
+
   const fieldErrors = fieldErrorTexts(t, error);
   const shownPhoto = photoPreview ?? (!removePhoto && initial ? cardPhotoUrl(initial) : null);
+  const shownLogo = logoPreview ?? (!removeLogo && initial ? cardLogoUrl(initial) : null);
   const previewName = displayName({ first_name: values.first_name || null, last_name: values.last_name || null }) || values.organization || '—';
 
   async function onSubmit(ev: FormEvent) {
@@ -87,7 +103,7 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
     setError(null);
     let saved: Card | null = null;
     try {
-      const payload: CardInput = { ...values, accent_color: accent, status, photo_style: photoStyle };
+      const payload: CardInput = { ...values, accent_color: accent, status, photo_style: photoStyle, design_style: designStyle };
       if (initial) {
         if (isAdmin && ownerId && ownerId !== initial.owner?.id) payload.owner_id = ownerId;
         saved = await updateCard(initial.id, payload);
@@ -101,17 +117,24 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
       setBusy(false);
       return;
     }
-    // The card itself is saved; a photo failure must not make the form look
-    // unsaved (a retry would create a duplicate card).
+    // The card itself is saved; an asset failure must not make the form look
+    // unsaved (a retry would create a duplicate card). Photo and logo remain
+    // independent, so one failed upload never prevents the other.
+    let warning: unknown;
     try {
       if (photoFile) saved = await uploadCardPhoto(saved.id, await shrinkImage(photoFile));
       else if (removePhoto && saved.photo) saved = await deleteCardPhoto(saved.id);
-      onSaved(saved);
     } catch (e) {
-      onSaved(saved, e);
-    } finally {
-      setBusy(false);
+      warning = e;
     }
+    try {
+      if (logoFile) saved = await uploadCardLogo(saved.id, logoFile);
+      else if (removeLogo && saved.logo) saved = await deleteCardLogo(saved.id);
+    } catch (e) {
+      warning ??= e;
+    }
+    onSaved(saved, warning);
+    setBusy(false);
   }
 
   const id = (k: string) => `${uid}-${k}`;
@@ -218,6 +241,23 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
                   </label>
                 </div>
               </div>
+              <div className="sm:col-span-2">
+                <span className="label">{t('form.design')}</span>
+                <div className="design-gallery">
+                  {CARD_DESIGNS.map((design) => (
+                    <button
+                      key={design.id}
+                      type="button"
+                      aria-pressed={designStyle === design.id}
+                      onClick={() => setDesignStyle(design.id)}
+                      className={`design-choice ${designStyle === design.id ? 'design-choice-active' : ''}`}
+                    >
+                      <span className="design-swatch" style={{ '--swatch-accent': accent, background: design.swatch } as CSSProperties} />
+                      <span className="min-w-0"><span className="block truncate">{design.label}</span><span className="block text-[10px] font-normal text-muted">{design.family}</span></span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </fieldset>
         </div>
@@ -225,16 +265,13 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
         {/* Photo + live preview of how the visitor will see the card header. */}
         <aside className="space-y-3">
           <span className="label">{t('form.photo')}</span>
-          <div className="overflow-hidden rounded-xl border border-line bg-bg">
-            <div className="h-12" style={{ background: `linear-gradient(120deg, ${accent}, color-mix(in oklab, ${accent} 45%, white))` }} />
-            <div className="px-4 pb-4">
-              <div className={`-mt-7 inline-block border-4 border-bg ${photoStyle === 'logo' ? 'rounded-2xl' : 'rounded-full'}`}>
-                <Avatar name={previewName} photoUrl={shownPhoto} accent={accent} logo={photoStyle === 'logo'} size={60} />
-              </div>
-              <p className="mt-1 truncate font-medium tracking-tight">{previewName}</p>
-              <p className="truncate text-xs text-muted">{[values.job_title, values.organization].filter(Boolean).join(' · ') || t('form.preview')}</p>
-            </div>
-          </div>
+          <CardIdentity
+            compact
+            name={previewName}
+            photoUrl={shownPhoto}
+            logoUrl={shownLogo}
+            card={{ ...values, accent_color: accent, photo_style: photoStyle, design_style: designStyle }}
+          />
           <div className="flex flex-wrap gap-2">
             <label className="btn btn-secondary btn-sm cursor-pointer">
               {shownPhoto ? t('form.photoChange') : t('form.photoChoose')}
@@ -280,6 +317,32 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
               ))}
             </div>
           </fieldset>
+          <div className="border-t border-line pt-3">
+            <span className="label">{t('form.logo')}</span>
+            {shownLogo && <img src={shownLogo} alt="" className="mb-3 h-16 w-full rounded-lg border border-line bg-white object-contain p-2" />}
+            <div className="flex flex-wrap gap-2">
+              <label className="btn btn-secondary btn-sm cursor-pointer">
+                {shownLogo ? t('form.logoChange') : t('form.logoChoose')}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    setLogoFile(file);
+                    if (file) setRemoveLogo(false);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              {shownLogo && (
+                <button type="button" className="btn btn-ghost btn-sm text-danger" onClick={() => { setLogoFile(null); setRemoveLogo(true); }}>
+                  {t('form.logoRemove')}
+                </button>
+              )}
+            </div>
+            <p className="mt-2 text-xs text-muted">{t('form.logoHint')}</p>
+          </div>
         </aside>
       </div>
 

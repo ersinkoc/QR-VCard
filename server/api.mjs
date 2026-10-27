@@ -23,9 +23,11 @@
  *   GET    /api/cards/:id/photo         image
  *   POST   /api/cards/:id/photo         raw image body (jpeg/png/webp, <= 4 MB)
  *   DELETE /api/cards/:id/photo
+ *   GET|POST|DELETE /api/cards/:id/logo separate corporate logo image
  *
  *   GET    /api/public/cards/:code      published card, public fields only
  *   GET    /api/public/cards/:code/photo[?format=jpg]
+ *   GET    /api/public/cards/:code/logo[?format=jpg]
  *
  *   GET    /api/users?q=                admin: accounts with card counts
  *   POST   /api/users                   admin
@@ -51,10 +53,10 @@ const PHOTO_LIMIT = 4 * 1024 * 1024;
 const USER_CACHE_MS = 10_000;
 const EPOCH_FIELD = 'qrv_session_epoch';
 
-const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'photo_style', 'qrv_views', 'is_primary', 'date_created', 'owner'];
+const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'qrv_views', 'is_primary', 'date_created', 'owner'];
 /** The card↔collaborator junction (qrv_card_access): rows granting people access to a card. */
 const ACCESS_FIELDS = ['id', 'card', 'user', 'expires_on'];
-const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'photo_style'];
+const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style'];
 const USER_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', 'last_access', 'username', 'role.id', 'role.name'];
 const AUDIT_FIELDS = ['id', 'date_created', 'actor', 'actor_email', 'action', 'target', 'detail'];
 const AUDIT_COLLECTION = 'qrv_audit_log';
@@ -293,6 +295,10 @@ export function createApiHandler(config) {
   // above) and counting turns itself off with a pointer to bootstrap.
   let fieldsForCards = [...CARD_FIELDS];
   let viewsSupported = true;
+  // Card designs are additive schema too. Public cards must keep rendering in
+  // the default Executive style until an older install re-runs bootstrap.
+  let designStylesSupported = true;
+  let logosSupported = true;
   // `directus_users.username` (the /<username> short URL) degrades like the
   // view fields: missing column → one warning, usernames resolve to nothing,
   // /c/<code> keeps working.
@@ -321,7 +327,21 @@ export function createApiHandler(config) {
         fieldsForCards = fieldsForCards.filter((f) => f !== 'qrv_views');
         log.warn?.('[api] vcards.qrv_views is missing — re-run npm run directus:bootstrap; view counting is off');
         if (query?.fields) query.fields = query.fields.filter((f) => f !== 'qrv_views');
-        return directus.request(path, { method, query, body });
+        return cardsRequest(path, { method, query, body });
+      }
+      if (designStylesSupported && err instanceof DirectusError && String(err.message).includes('design_style')) {
+        designStylesSupported = false;
+        fieldsForCards = fieldsForCards.filter((f) => f !== 'design_style');
+        log.warn?.('[api] vcards.design_style is missing — re-run npm run directus:bootstrap; cards use the Executive design');
+        if (query?.fields) query.fields = query.fields.filter((f) => f !== 'design_style');
+        return cardsRequest(path, { method, query, body });
+      }
+      if (logosSupported && err instanceof DirectusError && String(err.message).includes('logo')) {
+        logosSupported = false;
+        fieldsForCards = fieldsForCards.filter((f) => f !== 'logo');
+        log.warn?.('[api] vcards.logo is missing — re-run npm run directus:bootstrap; corporate logos are off');
+        if (query?.fields) query.fields = query.fields.filter((f) => f !== 'logo');
+        return cardsRequest(path, { method, query, body });
       }
       throw err;
     }
@@ -705,6 +725,7 @@ export function createApiHandler(config) {
     if (!canShareCard(card, actor)) throw new ApiError(403, 'FORBIDDEN', 'only the owner can delete a shared card');
     await directus.request(`/items/vcards/${card.id}`, { method: 'DELETE' });
     await deleteFileQuietly(card.photo);
+    await deleteFileQuietly(card.logo);
     if (card.is_primary) await promotePrimary(card.owner);
     audit({ req, actor, action: 'card.delete', target: card.code, detail: `name: ${[card.first_name, card.last_name].filter(Boolean).join(' ') || card.organization || '—'}, owner: ${card.owner ?? 'none'}` });
     sendJson(res, 200, { data: null });
@@ -715,10 +736,10 @@ export function createApiHandler(config) {
    * JPEG has no transparency, so a logo headed for the vCard is flattened on white
    * rather than on the encoder's default black.
    */
-  async function streamPhoto(res, card, { format, cache }) {
+  async function streamCardImage(res, card, { field, format, cache }) {
     const jpg = format === 'jpg';
-    const logo = card.photo_style === 'logo';
-    const upstream = await directus.request(`/assets/${card.photo}`, {
+    const logo = field === 'logo' || card.photo_style === 'logo';
+    const upstream = await directus.request(`/assets/${card[field]}`, {
       raw: true,
       query: {
         width: 512,
@@ -742,7 +763,7 @@ export function createApiHandler(config) {
   async function getCardPhoto({ res, url, actor, params }) {
     const card = await managedCard(params.id, actor, fieldsForCards);
     if (!card.photo) throw new ApiError(404, 'NOT_FOUND');
-    await streamPhoto(res, card, { format: url.searchParams.get('format'), cache: 'private, max-age=300' });
+    await streamCardImage(res, card, { field: 'photo', format: url.searchParams.get('format'), cache: 'private, max-age=300' });
   }
 
   async function uploadCardPhoto({ req, res, actor, params }) {
@@ -768,6 +789,39 @@ export function createApiHandler(config) {
     const card = await managedCard(params.id, actor, fieldsForCards);
     const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { photo: null }, query: { fields: CARD_FIELDS } });
     await deleteFileQuietly(card.photo);
+    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
+    sendJson(res, 200, { data: cardDto(updated, owners) });
+  }
+
+  async function getCardLogo({ res, url, actor, params }) {
+    const card = await managedCard(params.id, actor, fieldsForCards);
+    if (!card.logo) throw new ApiError(404, 'NOT_FOUND');
+    await streamCardImage(res, card, { field: 'logo', format: url.searchParams.get('format'), cache: 'private, max-age=300' });
+  }
+
+  async function uploadCardLogo(args) {
+    const { req, res, actor, params } = args;
+    const card = await managedCard(params.id, actor, fieldsForCards);
+    const buf = await readRaw(req, PHOTO_LIMIT).catch((err) => {
+      if (err instanceof ApiError && err.code === 'PAYLOAD_TOO_LARGE') throw new ApiError(413, 'PHOTO_TOO_LARGE');
+      throw err;
+    });
+    const type = sniffImage(buf);
+    if (!type) throw new ApiError(415, 'PHOTO_TYPE', 'use a JPEG, PNG or WebP image');
+    const form = new FormData();
+    form.append('title', `vcard logo ${card.code}`);
+    form.append('file', new Blob([buf], { type }), `vcard-logo-${card.code}.${PHOTO_TYPES[type]}`);
+    const file = await directus.request('/files', { method: 'POST', body: form });
+    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: file.id }, query: { fields: CARD_FIELDS } });
+    await deleteFileQuietly(card.logo);
+    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
+    sendJson(res, 200, { data: cardDto(updated, owners) });
+  }
+
+  async function deleteCardLogo({ res, actor, params }) {
+    const card = await managedCard(params.id, actor, fieldsForCards);
+    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: null }, query: { fields: CARD_FIELDS } });
+    await deleteFileQuietly(card.logo);
     const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
     sendJson(res, 200, { data: cardDto(updated, owners) });
   }
@@ -923,7 +977,13 @@ function dayString(msOrDate) {
   async function getPublicPhoto({ res, url, params }) {
     const card = await publishedByCode(params.code);
     if (!card?.photo) throw new ApiError(404, 'NOT_FOUND');
-    await streamPhoto(res, card, { format: url.searchParams.get('format'), cache: 'public, max-age=300' });
+    await streamCardImage(res, card, { field: 'photo', format: url.searchParams.get('format'), cache: 'public, max-age=300' });
+  }
+
+  async function getPublicLogo({ res, url, params }) {
+    const card = await publishedByCode(params.code);
+    if (!card?.logo) throw new ApiError(404, 'NOT_FOUND');
+    await streamCardImage(res, card, { field: 'logo', format: url.searchParams.get('format'), cache: 'public, max-age=300' });
   }
 
   async function listUsers({ res, url }) {
@@ -1369,7 +1429,7 @@ function dayString(msOrDate) {
     if (target.id === (await getServiceUserId())) throw new ApiError(409, 'SERVICE_ACCOUNT', 'this account’s token runs the app; it cannot be deleted');
     await assertAdminRemains(target, { deleting: true });
     const mode = url.searchParams.get('cards') === 'transfer' ? 'transfer' : 'delete';
-    const cards = (await directus.request('/items/vcards', { query: { fields: ['id', 'photo'], filter: { owner: { _eq: target.id } }, limit: -1 } })) ?? [];
+    const cards = (await directus.request('/items/vcards', { query: { fields: ['id', 'photo', 'logo'], filter: { owner: { _eq: target.id } }, limit: -1 } })) ?? [];
     // Access rows pointing at the deleted user (as collaborator) are garbage.
     if (accessSupported) {
       await accessRequest(`/items/${ACCESS_COLLECTION}`, { method: 'DELETE', body: { query: { filter: { user: { _eq: target.id } } } } }).catch(() => {});
@@ -1380,7 +1440,10 @@ function dayString(msOrDate) {
         await directus.request('/items/vcards', { method: 'PATCH', body: { keys, data: { owner: actor.id } } });
       } else {
         await directus.request('/items/vcards', { method: 'DELETE', body: keys });
-        for (const c of cards) await deleteFileQuietly(c.photo);
+        for (const c of cards) {
+          await deleteFileQuietly(c.photo);
+          await deleteFileQuietly(c.logo);
+        }
       }
     }
     await directus.request(`/users/${target.id}`, { method: 'DELETE' });
@@ -1410,6 +1473,7 @@ function dayString(msOrDate) {
     ['GET', /^\/api\/public\/u\/(?<username>[^/]+)$/, getPublicUserCard, 'none'],
     ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)$/, getPublicCard, 'none'],
     ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)\/photo$/, getPublicPhoto, 'none'],
+    ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)\/logo$/, getPublicLogo, 'none'],
     ['GET', /^\/api\/me$/, getMe, 'user'],
     ['PATCH', /^\/api\/me$/, patchMe, 'user'],
     ['POST', /^\/api\/me\/password$/, changeMyPassword, 'user'],
@@ -1423,6 +1487,9 @@ function dayString(msOrDate) {
     ['GET', /^\/api\/cards\/(?<id>[^/]+)\/photo$/, getCardPhoto, 'user'],
     ['POST', /^\/api\/cards\/(?<id>[^/]+)\/photo$/, uploadCardPhoto, 'user'],
     ['DELETE', /^\/api\/cards\/(?<id>[^/]+)\/photo$/, deleteCardPhoto, 'user'],
+    ['GET', /^\/api\/cards\/(?<id>[^/]+)\/logo$/, getCardLogo, 'user'],
+    ['POST', /^\/api\/cards\/(?<id>[^/]+)\/logo$/, uploadCardLogo, 'user'],
+    ['DELETE', /^\/api\/cards\/(?<id>[^/]+)\/logo$/, deleteCardLogo, 'user'],
     ['GET', /^\/api\/cards\/(?<id>[^/]+)\/shares$/, listCardShares, 'user'],
     ['POST', /^\/api\/cards\/(?<id>[^/]+)\/shares$/, addCardShare, 'user'],
     ['PATCH', /^\/api\/cards\/(?<id>[^/]+)\/shares\/(?<userId>[^/]+)$/, patchCardShare, 'user'],

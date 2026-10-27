@@ -1,0 +1,12 @@
+import type { SVGProps } from 'react';
+
+export default function BrandMark({ className = '', ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" className={className} {...props}>
+      <rect width="48" height="48" rx="13" fill="currentColor" />
+      <path d="M12 12h10v10H12zm14 0h10v10H26zM12 26h10v10H12z" fill="none" stroke="white" strokeWidth="3.2" />
+      <path d="M27 27h4v4h-4zm5 5h4v4h-4zm0-5h4v4h-4zm-5 5h4v4h-4z" fill="white" />
+      <path d="M21 18h6M18 21v6" fill="none" stroke="white" strokeWidth="3.2" strokeLinecap="square" />
+    </svg>
+  );
+}

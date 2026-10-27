@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import Avatar from '../components/Avatar';
+import CardIdentity, { cardDesign } from '../components/CardIdentity';
 import ContactActions from '../components/ContactActions';
 import CopyButton from '../components/CopyButton';
 import LanguageSwitch from '../components/LanguageSwitch';
 import QrDisplay from '../components/QrDisplay';
 import { useI18n } from '../i18n';
 import type { PublicCard } from '../lib/api';
-import { displayName, fetchPublicCard, fetchPublicUserCard, publicPhotoUrl, shortUrl } from '../lib/api';
+import { displayName, fetchPublicCard, fetchPublicUserCard, publicLogoUrl, publicPhotoUrl, shortUrl } from '../lib/api';
 import type { QrStyle } from '../lib/qr';
 import { qrDownloadUrl } from '../lib/qr';
 
@@ -79,78 +80,70 @@ export default function ScanPage({ byUsername = false }: { byUsername?: boolean 
 
   const { card } = state;
   const url = shortUrl(card.code);
-  const accent = card.accent_color ?? 'var(--color-accent)';
-  const subtitle = [card.job_title, displayName(card) ? card.organization : null].filter(Boolean).join(' · ');
+  const design = cardDesign(card);
+  const contactRows = [card.phone, card.email, card.website?.replace(/^https?:\/\//, ''), card.address].filter(Boolean) as string[];
 
   return (
-    <main className="min-h-dvh bg-bg px-4 page-pad">
+    <main
+      className={`public-card-page public-card-page-${design} min-h-dvh px-4 page-pad`}
+      style={{ '--card-accent': card.accent_color ?? '#2457f5' } as CSSProperties}
+    >
       <div className="mx-auto w-full max-w-md">
         <div className="mb-3 flex justify-end">
-          <LanguageSwitch />
+          <LanguageSwitch themed className="public-language-switch" />
         </div>
-        <div className="card overflow-hidden rise">
-          {/* Accent band: the card's own colour, the one flourish the visitor page carries. */}
-          <div className="h-20 w-full" style={{ background: `linear-gradient(120deg, ${accent}, color-mix(in oklab, ${accent} 45%, white))` }} />
-          <div className="px-6 pb-6">
-            <div className="-mt-10 flex items-end gap-4">
-              <div className={`${card.photo_style === 'logo' ? 'rounded-2xl' : 'rounded-full'} border-4 border-surface bg-surface`}>
-                <Avatar name={name} photoUrl={publicPhotoUrl(card)} accent={card.accent_color} logo={card.photo_style === 'logo'} size={88} />
-              </div>
-            </div>
-            <h1 className="mt-3 text-2xl font-semibold tracking-tight break-words">{name}</h1>
-            {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
+        <div className="public-card-shell rise">
+          <CardIdentity card={card} name={name} photoUrl={publicPhotoUrl(card)} logoUrl={publicLogoUrl(card)} />
+          <div className="public-card-body px-6 pb-6 pt-5">
 
-            {(card.phone || card.email || card.website || card.address) && (
-              <dl className="mt-4 space-y-1.5 text-sm">
-                {card.phone && <dd className="break-words">{card.phone}</dd>}
-                {card.email && <dd className="break-words">{card.email}</dd>}
-                {card.website && <dd className="break-words">{card.website.replace(/^https?:\/\//, '')}</dd>}
-                {card.address && <dd className="whitespace-pre-line text-muted">{card.address}</dd>}
+            {contactRows.length > 0 && (
+              <dl className="contact-ledger">
+                {contactRows.map((value, index) => <dd key={`${index}-${value}`} className="break-words whitespace-pre-line"><span>{String(index + 1).padStart(2, '0')}</span>{value}</dd>)}
               </dl>
             )}
-            {card.note && <p className="mt-4 whitespace-pre-line rounded-lg bg-fg/5 p-3 text-sm">{card.note}</p>}
+            {card.note && <p className="brand-note">{card.note}</p>}
 
             <div className="mt-6">
               <ContactActions card={card} />
             </div>
 
-            <div className="mt-6 border-t border-line pt-4">
+            <div className="qr-section">
               {showQr ? (
-                <div className="flex flex-col items-center gap-3 rise">
-                  <div className="flex rounded-lg border border-line bg-surface p-1 text-xs">
+                <div className="qr-panel rise">
+                  <div className="qr-style-switch">
                     <button
                       type="button"
-                      className={`rounded px-2.5 py-1 font-medium transition-colors ${qrStyle === 'standard' ? 'bg-primary text-white shadow-xs' : 'text-muted hover:text-fg'}`}
+                      className={`qr-style-option ${qrStyle === 'standard' ? 'is-active' : ''}`}
                       onClick={() => setQrStyle('standard')}
                     >
                       {t('qr.styleStandard')}
                     </button>
                     <button
                       type="button"
-                      className={`rounded px-2.5 py-1 font-medium transition-colors ${qrStyle === 'art' ? 'bg-primary text-white shadow-xs' : 'text-muted hover:text-fg'}`}
+                      className={`qr-style-option ${qrStyle === 'art' ? 'is-active' : ''}`}
                       onClick={() => setQrStyle('art')}
                     >
                       {t('qr.styleArt')}
                     </button>
                   </div>
-                  <QrDisplay code={card.code} label={url} size={200} style={qrStyle} />
-                  <p className="code text-muted">{url}</p>
-                  <div className="flex gap-2">
-                    <CopyButton text={url} />
-                    <a className="btn btn-secondary btn-sm" href={qrDownloadUrl(card.code, { style: qrStyle })} download={`qr-${card.code}-${qrStyle}.png`}>
+                  <QrDisplay code={card.code} label={url} size={200} style={qrStyle} className="public-qr" />
+                  <p className="qr-link">{url}</p>
+                  <div className="qr-actions">
+                    <CopyButton text={url} className="card-action card-action-secondary card-action-small" />
+                    <a className="card-action card-action-secondary card-action-small" href={qrDownloadUrl(card.code, { style: qrStyle })} download={`qr-${card.code}-${qrStyle}.png`}>
                       {t('qr.download')}
                     </a>
                   </div>
                 </div>
               ) : (
-                <button type="button" className="btn btn-ghost w-full" onClick={() => setShowQr(true)}>
-                  {t('qr.show')}
+                <button type="button" className="qr-reveal" onClick={() => setShowQr(true)}>
+                  <span aria-hidden="true">⌗</span>{t('qr.show')}<span aria-hidden="true">↗</span>
                 </button>
               )}
             </div>
           </div>
         </div>
-        <p className="mt-6 text-center text-xs text-muted">
+        <p className="public-card-footer">
           <Link to="/">{t('scan.poweredBy')}</Link>
         </p>
       </div>

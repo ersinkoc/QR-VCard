@@ -1,13 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="oklch(58% 0.16 264)" />
-  <rect x="6" y="6" width="8" height="8" rx="1.5" fill="none" stroke="oklch(99% 0 0)" stroke-width="2.4" />
-  <rect x="9" y="9" width="2" height="2" fill="oklch(99% 0 0)" />
-  <rect x="18" y="6" width="8" height="8" rx="1.5" fill="none" stroke="oklch(99% 0 0)" stroke-width="2.4" />
-  <rect x="21" y="9" width="2" height="2" fill="oklch(99% 0 0)" />
-  <rect x="6" y="18" width="8" height="8" rx="1.5" fill="none" stroke="oklch(99% 0 0)" stroke-width="2.4" />
-  <rect x="9" y="21" width="2" height="2" fill="oklch(99% 0 0)" />
-  <rect x="18" y="18" width="3" height="3" fill="oklch(99% 0 0)" />
-  <rect x="23" y="18" width="3" height="3" fill="oklch(99% 0 0)" />
-  <rect x="18" y="23" width="3" height="3" fill="oklch(99% 0 0)" />
-  <rect x="23" y="23" width="3" height="3" fill="oklch(99% 0 0)" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <rect width="48" height="48" rx="13" fill="#2457f5" />
+  <path d="M12 12h10v10H12zm14 0h10v10H26zM12 26h10v10H12z" fill="none" stroke="#fff" stroke-width="3.2" />
+  <path d="M27 27h4v4h-4zm5 5h4v4h-4zm0-5h4v4h-4zm-5 5h4v4h-4z" fill="#fff" />
+  <path d="M21 18h6M18 21v6" fill="none" stroke="#fff" stroke-width="3.2" />
 </svg>

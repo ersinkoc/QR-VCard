@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Link, Navigate, NavLink, Route, Routes } from 'react-router-dom';
 import LanguageSwitch from '../../components/LanguageSwitch';
+import BrandMark from '../../components/BrandMark';
 import { errorText, useI18n } from '../../i18n';
 import type { Me } from '../../lib/api';
 import { displayName, fetchMe, login, logout, setUnauthenticatedHandler } from '../../lib/api';
@@ -42,7 +43,7 @@ function LoginScreen({ expired, onLoggedIn }: { expired: boolean; onLoggedIn: (m
       <div className="w-full max-w-sm rise">
         <div className="card p-6">
           <div className="flex items-center gap-3">
-            <img src="/favicon.svg" alt="" width="36" height="36" />
+            <BrandMark className="h-9 w-9 text-accent" />
             <div>
               <h1 className="text-xl font-semibold tracking-tight">{t('auth.title')}</h1>
               <p className="text-sm text-muted">{t('auth.subtitle')}</p>
@@ -89,7 +90,7 @@ function PanelLayout({ me, onSignOut, children }: { me: Me; onSignOut: () => voi
       <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
         <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
           <Link to="/panel" className="flex items-center gap-2 font-semibold tracking-tight">
-            <img src="/favicon.svg" alt="" width="26" height="26" />
+            <BrandMark className="h-7 w-7 text-accent" />
             <span>QR-VCard</span>
           </Link>
           <nav className="order-3 flex w-full gap-1 overflow-x-auto sm:order-none sm:w-auto" aria-label="Panel">
