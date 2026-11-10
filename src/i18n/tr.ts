@@ -564,6 +564,8 @@ export const tr = {
       section: '“{detail}” bölümü düzgün açılıp kapanmıyor ({{#{detail}}} … {{/{detail}}}).',
       comment: 'Yorum ve <! … > yapıları kullanılamaz: {detail}',
       markup: 'Bozuk veya izin verilmeyen işaretleme: {detail} — metin içinde < yerine &lt; yazın.',
+      section_markup: '“{detail}” bölümü etiketleri bölüyor: {{#…}} ve {{/…}} metinde, aynı etiketin içinde durmalı ve arada açılan her etiket kapanmalı.',
+      unquoted: 'Etiket içeren öznitelik değeri tırnak içinde olmalı: {detail} — ör. title="{{name}}".',
       tag: '<{detail}> etiketi kullanılamaz.',
       event: 'Olay öznitelikleri kullanılamaz: {detail}',
       attribute: 'Bu öznitelik kullanılamaz: {detail}',

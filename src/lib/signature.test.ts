@@ -173,6 +173,29 @@ describe('free HTML signatures', () => {
     expect(renderSignature({ ...design, customHtml: '<script>alert(1)</script>' }, full)).toBe('');
   });
 
+  it('never lets a token sit in an unquoted attribute, where a space in card data would add attributes', () => {
+    for (const html of ['<td title={{name}}>x</td>', '<a href={{websiteUrl}}>x</a>', '<td title=a{{title}}>x</td>']) expect(checkCustomHtml(html)?.code, html).toBe('unquoted');
+    // Static unquoted values (common in pasted email HTML) stay fine.
+    expect(checkCustomHtml('<table border=0 cellpadding=0><tr><td width=120>{{name}}</td></tr></table>')).toBeNull();
+    const html = renderSignature({ ...baseTemplate('custom'), customHtml: '<td title={{name}}>x</td>' }, { ...full, name: 'x onmouseover=alert(1)' });
+    expect(html).not.toContain('onmouseover');
+  });
+
+  it('keeps sections to whole pieces of markup, so dropping one can never splice a new tag together', () => {
+    const splices = [
+      '<b title="{{#phone}}">{{/phone}}" onclick="alert(1)">x</b>',
+      '<b>{{#phone}}</b><i>{{/phone}}</i>',
+      '{{#phone}}<b>{{/phone}}</b>',
+      '<a href="https://x.example/{{#email}}">a</a>{{/email}}',
+    ];
+    for (const html of splices) expect(checkCustomHtml(html)?.code, html).toBe('section_markup');
+    // Every allowed template stays valid whichever sections render.
+    const ok = '<table><tr>{{#photo}}<td>{{photo}}</td>{{/photo}}<td><b>{{name}}</b>{{#phone}}<br>{{#email}}<i>{{email}}</i>{{/email}} {{phone}}{{/phone}}</td></tr></table>';
+    expect(checkCustomHtml(ok)).toBeNull();
+    const rendered = renderSignature({ ...baseTemplate('custom'), customHtml: '<b title="{{#phone}}">{{/phone}}" onclick="alert(1)">x</b>' }, empty);
+    expect(rendered).not.toContain('onclick');
+  });
+
   it('is stored only when the checker accepts it', () => {
     expect(validateSignatureConfig({ ...baseTemplate('custom'), customHtml: CUSTOM_HTML_STARTER }).error).toBeNull();
     expect(validateSignatureConfig({ ...baseTemplate('custom'), customHtml: '<a href="javascript:x">x</a>' }).error).toBe('invalid');

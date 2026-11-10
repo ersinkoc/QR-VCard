@@ -566,6 +566,8 @@ export const en: Dict = {
       section: 'The “{detail}” section does not open and close properly ({{#{detail}}} … {{/{detail}}}).',
       comment: 'Comments and <! … > constructs are not allowed: {detail}',
       markup: 'Broken or disallowed markup: {detail} — write &lt; instead of < in text.',
+      section_markup: 'The “{detail}” section splits tags: {{#…}} and {{/…}} must sit in text, inside the same element, and close every tag opened between them.',
+      unquoted: 'An attribute value with a token must be in quotes: {detail} — e.g. title="{{name}}".',
       tag: 'The <{detail}> tag is not allowed.',
       event: 'Event attributes are not allowed: {detail}',
       attribute: 'This attribute is not allowed: {detail}',

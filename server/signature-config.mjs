@@ -262,8 +262,23 @@ export function checkCustomHtml(html) {
   // Then the markup itself, tag by tag. Anything that is not a well-formed,
   // allowed tag where a '<' appears is refused.
   const stack = [];
+  // The markup is checked with its sections in place, but rendered with some
+  // of them cut out. So a section must open and close in text, at the same
+  // depth of open tags: cutting it then removes whole elements only, and the
+  // rest is markup this check has already accepted.
+  const sections = [];
+  const sectionsInText = (text) => {
+    for (const [, kind, name] of text.matchAll(TOKEN_RE)) {
+      if (kind === '#') sections.push({ name, at: stack.join('>') });
+      else if (kind === '/' && sections.pop()?.at !== stack.join('>')) return { code: 'section_markup', detail: name };
+    }
+    return null;
+  };
   let i = 0;
+  let textFrom = 0;
   while ((i = html.indexOf('<', i)) !== -1) {
+    const textProblem = sectionsInText(html.slice(textFrom, i));
+    if (textProblem) return textProblem;
     const rest = html.slice(i);
     if (rest.startsWith('<!') || rest.startsWith('<?')) return { code: 'comment', detail: rest.slice(0, 12) };
     const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9]*)/.exec(rest);
@@ -277,6 +292,8 @@ export function checkCustomHtml(html) {
       for (;;) {
         const a = ATTR_RE.exec(rest.slice(pos));
         if (!a) break;
+        // Card data is escaped for quoted values only: unquoted, a space in it would start a new attribute.
+        if (a[4] !== undefined && a[4].includes('{{')) return { code: 'unquoted', detail: a[0].trim().slice(0, 40) };
         attrs.push({ name: a[1].toLowerCase(), value: a[2] ?? a[3] ?? a[4] ?? '' });
         pos += a[0].length;
       }
@@ -284,7 +301,10 @@ export function checkCustomHtml(html) {
     const end = /^\s*\/?>/.exec(rest.slice(pos));
     if (!end) return { code: 'markup', detail: rest.slice(0, Math.min(rest.length, pos + 12)) };
     for (const { name, value } of attrs) {
-      for (const t of value.matchAll(TOKEN_RE)) if (TAG_TOKENS.has(t[2])) return { code: 'image_token', detail: t[2] };
+      for (const t of value.matchAll(TOKEN_RE)) {
+        if (t[1]) return { code: 'section_markup', detail: t[2] };
+        if (TAG_TOKENS.has(t[2])) return { code: 'image_token', detail: t[2] };
+      }
       if (name.startsWith('on')) return { code: 'event', detail: name };
       if (!ALLOWED_ATTRS.has(name)) return { code: 'attribute', detail: `${tag} ${name}` };
       const v = value.trim();
@@ -309,7 +329,10 @@ export function checkCustomHtml(html) {
       stack.push(tag);
     }
     i += pos + end[0].length;
+    textFrom = i;
   }
+  const tailProblem = sectionsInText(html.slice(textFrom));
+  if (tailProblem) return tailProblem;
   if (stack.length) return { code: 'nesting', detail: stack[stack.length - 1] };
   return null;
 }
