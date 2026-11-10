@@ -85,3 +85,18 @@ describe('validateCardInput design style', () => {
     expect(validateCardInput({ design_style: 'neon' }, { partial: true })).toEqual({ data: {}, errors: { design_style: 'invalid' } });
   });
 });
+
+describe('validateCardInput design config', () => {
+  it('stores a valid page design and clears with null', () => {
+    const { data, errors } = validateCardInput({ design_config: { template: 'banner', theme: { radius: 6 } } }, { partial: true });
+    expect(errors).toEqual({});
+    expect(data.design_config.template).toBe('banner');
+    expect(data.design_config.theme.radius).toBe(6);
+    expect(validateCardInput({ design_config: null }, { partial: true })).toEqual({ data: { design_config: null }, errors: {} });
+  });
+
+  it('refuses a tampered design as a whole', () => {
+    expect(validateCardInput({ design_config: { theme: { light: { bg: 'red' } } } }, { partial: true })).toEqual({ data: {}, errors: { design_config: 'invalid' } });
+    expect(validateCardInput({ design_config: [1] }, { partial: true })).toEqual({ data: {}, errors: { design_config: 'invalid' } });
+  });
+});

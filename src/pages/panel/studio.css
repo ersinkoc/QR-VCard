@@ -1,0 +1,168 @@
+/* Design studio (DesignStudio.tsx): full-screen editor with a phone preview. */
+
+.studio {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+.studio-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+.studio-title { font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+.studio-bar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.studio-alert { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--color-danger); background: color-mix(in oklab, var(--color-danger) 10%, var(--color-surface)); border-bottom: 1px solid var(--color-line); }
+
+.studio-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(340px, 440px) 1fr; }
+.studio-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--color-line); background: var(--color-surface); }
+.studio-tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--color-line); overflow-x: auto; }
+.studio-tabs button {
+  flex: none;
+  height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.studio-tabs button[aria-selected='true'] { color: var(--color-fg); border-bottom-color: var(--color-accent); }
+.studio-tab-preview-btn { display: none; }
+.studio-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; overscroll-behavior: contain; }
+
+.studio-stage {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in oklab, var(--color-fg) 10%, transparent) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--color-bg);
+}
+/* The viewport's transform makes it the containing block of the card's fixed
+   parts (dock, top bar, QR dialog): they stay on the phone's screen while the
+   screen inside it scrolls. It must not be the scroller itself, or the fixed
+   parts would scroll away with the content. */
+.studio-phone {
+  width: 390px;
+  max-width: 100%;
+  height: min(820px, 100%);
+  padding: 10px;
+  border-radius: 44px;
+  background: #111;
+  box-shadow: 0 30px 80px -30px rgb(0 0 0 / .5), inset 0 0 0 1px rgb(255 255 255 / .08);
+}
+.studio-viewport { position: relative; height: 100%; overflow: hidden; border-radius: 34px; background: #fff; transform: translateZ(0); }
+.studio-screen { height: 100%; overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: none; }
+.studio-screen::-webkit-scrollbar { display: none; }
+
+.studio-hint { margin: 0 0 12px; font-size: 12px; color: var(--color-muted); line-height: 1.5; }
+.studio-warn { color: var(--color-danger); }
+
+.studio-templates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.studio-template {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  background: var(--color-bg);
+  color: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s, transform .15s;
+}
+.studio-template:hover { border-color: var(--color-fg); }
+.studio-template[aria-pressed='true'] { border-color: var(--color-accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-accent) 35%, transparent); }
+.studio-template-name { margin-top: 6px; font-size: 13px; font-weight: 600; }
+.studio-template-note { font-size: 11px; color: var(--color-muted); line-height: 1.35; }
+
+
+.studio-section { border: 0; margin: 0; padding: 0 0 16px; border-bottom: 1px solid var(--color-line); }
+.studio-section:last-child { border-bottom: 0; }
+.studio-section legend { margin-bottom: 10px; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--color-muted); }
+
+.studio-seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-bg); }
+.studio-seg button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.studio-seg button[aria-pressed='true'] { background: var(--color-surface); color: var(--color-fg); box-shadow: 0 1px 3px rgb(0 0 0 / .12); }
+.studio-seg-wide { display: flex; }
+.studio-seg-wide button { flex: 1 1 auto; }
+
+.studio-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.studio-check input { width: 16px; height: 16px; accent-color: var(--color-accent); }
+.studio-range { width: 100%; accent-color: var(--color-accent); }
+
+.studio-colors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.studio-color { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-bg); }
+.studio-color input[type='color'] { flex: none; width: 28px; height: 28px; padding: 0; border: 1px solid var(--color-line); border-radius: 8px; background: none; cursor: pointer; }
+.studio-color input[type='color']::-webkit-color-swatch-wrapper { padding: 2px; }
+.studio-color input[type='color']::-webkit-color-swatch { border: 0; border-radius: 5px; }
+.studio-color-label { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-color-hex { width: 66px; border: 0; background: transparent; color: var(--color-muted); font: 12px var(--font-mono); text-align: right; }
+.studio-color-hex:focus { outline: none; color: var(--color-fg); }
+.studio-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; }
+.studio-font-sample { flex: none; font-size: 20px; line-height: 1; }
+
+.studio-block { border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-bg); }
+.studio-block.is-hidden .studio-block-title { color: var(--color-muted); }
+.studio-block.has-error { border-color: var(--color-danger); }
+.studio-block-head { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 4px; }
+.studio-block-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 8px; border: 0; background: transparent; color: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.studio-badge { padding: 1px 6px; border-radius: 999px; background: color-mix(in oklab, var(--color-fg) 10%, transparent); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.studio-block-tools { display: inline-flex; gap: 2px; }
+.studio-icon { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--color-muted); font-size: 14px; cursor: pointer; }
+.studio-icon:hover:not(:disabled) { background: color-mix(in oklab, var(--color-fg) 8%, transparent); color: var(--color-fg); }
+.studio-icon:disabled { opacity: .3; cursor: default; }
+.studio-icon.is-danger:hover { color: var(--color-danger); }
+.studio-block-body { display: grid; gap: 12px; padding: 4px 12px 14px; }
+.studio-fields { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.studio-fields li { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
+.studio-fields label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.studio-fields input { width: 16px; height: 16px; accent-color: var(--color-accent); }
+.studio-add { display: flex; gap: 8px; padding-top: 6px; }
+.studio-add .input { flex: 1; }
+
+/* Phones and tablets: one column; "Preview" becomes a tab. */
+@media (max-width: 1023px) {
+  .studio-main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); }
+  .studio-main.studio-tab-preview { grid-template-rows: auto minmax(0, 1fr); }
+  .studio-side { border-right: 0; }
+  .studio-stage { display: none; }
+  .studio-tab-preview-btn { display: block; }
+  .studio-tab-preview .studio-panel { display: none; }
+  .studio-tab-preview .studio-side { flex: none; }
+  .studio-tab-preview .studio-stage { display: flex; padding: 12px; }
+  .studio-tab-preview .studio-phone { height: 100%; }
+}
+@media (max-width: 480px) {
+  .studio-bar { padding-inline: 12px; }
+  .studio-tab-preview .studio-stage { padding: 0; }
+  .studio-tab-preview .studio-phone { width: 100%; padding: 0; border-radius: 0; box-shadow: none; }
+  .studio-tab-preview .studio-viewport { border-radius: 0; }
+}

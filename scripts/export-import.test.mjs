@@ -59,6 +59,17 @@ describe('import-directus', () => {
     expect(out.code).toBe('demo-01');
   });
 
+  it('remaps the logo and page background, and leaves absent image fields out', () => {
+    const fileMap = new Map([['src-logo', 'dst-logo'], ['src-bg', 'dst-bg']]);
+    const out = cardPayload({ id: 'c1', code: 'x', logo: 'src-logo', background: 'src-bg', design_config: { v: 1 } }, { fileMap });
+    expect(out.logo).toBe('dst-logo');
+    expect(out.background).toBe('dst-bg');
+    expect(out.design_config).toEqual({ v: 1 });
+    const older = cardPayload({ id: 'c2', code: 'y' }, { fileMap });
+    expect('logo' in older).toBe(false);
+    expect('background' in older).toBe(false);
+  });
+
   it('nulls dangling card references instead of writing source ids', () => {
     const out = cardPayload({ id: 'c1', code: 'x', owner: 'gone', photo: 'gone' });
     expect(out.owner).toBeNull();

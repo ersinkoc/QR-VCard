@@ -183,12 +183,54 @@ test.describe('panel main flows', () => {
     expect((await page.request.get(`/api/cards/${card!.id}/logo`)).status()).toBe(200);
 
     await page.getByRole('button', { name: 'Publish' }).first().click();
-    await expect(page.getByText('Published', { exact: true }).first()).toBeVisible();
+    // Wait for THIS card's badge: the list's stats also say "Published", so a
+    // page-wide match passes before the publish request has landed.
+    await expect(page.getByRole('listitem').filter({ hasText: 'E2E Logo' }).getByText('Published', { exact: true })).toBeVisible();
     expect((await page.request.get(`/api/public/cards/${card!.code}/logo`)).status()).toBe(200);
     await page.getByRole('button', { name: 'Delete' }).first().click();
     await page.getByRole('button', { name: 'Delete' }).last().click();
     await expect(page.getByText('Card deleted.')).toBeVisible();
     rmSync(file, { force: true });
+    await signOut(page);
+  });
+
+  test('page designer publishes a template page with a custom link block', async ({ page, accounts }) => {
+    await signIn(page, accounts.user);
+    await page.getByRole('button', { name: 'New card' }).click();
+    await page.getByLabel('First name').fill('E2E');
+    await page.getByLabel('Last name').fill('Page');
+    await page.getByLabel('Phone').fill('+90 555 111 22 33');
+    await page.getByRole('button', { name: 'Page designer' }).click();
+
+    const studio = page.getByRole('dialog', { name: 'Design studio' });
+    await studio.getByRole('button', { name: /^Noir/ }).click();
+    await studio.getByRole('tab', { name: 'Blocks' }).click();
+    await studio.getByRole('combobox', { name: 'Add block' }).selectOption('link');
+    await studio.getByRole('button', { name: '+ Add block' }).click();
+    await studio.getByLabel('Button text').fill('Menu');
+    // An unsafe target blocks Apply; a bare host is accepted and stored as https.
+    await studio.getByLabel('Link address (https)').fill('javascript:alert(1)');
+    await expect(studio.getByRole('button', { name: 'Apply' })).toBeDisabled();
+    await studio.getByLabel('Link address (https)').fill('example.com/menu');
+    await studio.getByRole('button', { name: 'Apply' }).click();
+    await expect(studio).toBeHidden();
+
+    await page.getByLabel('Status').selectOption('published');
+    await page.getByRole('button', { name: 'Save card' }).click();
+    await expect(page.getByText('Card saved.')).toBeVisible();
+
+    const listing = await page.request.get('/api/cards');
+    const card = ((await listing.json()) as { data: { id: string; code: string; last_name: string | null; design_config: { template: string; blocks: { type: string; url?: string }[] } | null }[] }).data.find((row) => row.last_name === 'Page');
+    expect(card?.design_config?.template).toBe('noir');
+    expect(card?.design_config?.blocks.find((b) => b.type === 'link')?.url).toBe('https://example.com/menu');
+
+    await page.goto(`/c/${card!.code}`);
+    await expect(page.locator('.pc[data-theme="dark"]')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'E2E Page' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Menu/ })).toHaveAttribute('href', 'https://example.com/menu');
+
+    expect((await page.request.delete(`/api/cards/${card!.id}`, { headers: { 'X-QRV': '1' } })).status()).toBe(200);
+    await page.goto('/panel');
     await signOut(page);
   });
 });

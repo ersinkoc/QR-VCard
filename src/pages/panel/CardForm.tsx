@@ -1,12 +1,17 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import CardIdentity from '../../components/CardIdentity';
 import Field from '../../components/Field';
+import PagePreview from '../../components/page/PagePreview';
 import { errorText, fieldErrorTexts, isApiError, useI18n } from '../../i18n';
-import type { AdminUser, Card, CardDesign, CardInput } from '../../lib/api';
-import { cardLogoUrl, cardPhotoUrl, createCard, deleteCardLogo, deleteCardPhoto, displayName, listUsers, shortUrl, updateCard, uploadCardLogo, uploadCardPhoto } from '../../lib/api';
+import type { AdminUser, Card, CardDesign, CardInput, PublicCard } from '../../lib/api';
+import { cardBackgroundUrl, cardLogoUrl, cardPhotoUrl, createCard, deleteCardBackground, deleteCardLogo, deleteCardPhoto, displayName, listUsers, shortUrl, updateCard, uploadCardBackground, uploadCardLogo, uploadCardPhoto } from '../../lib/api';
 import { shrinkImage } from '../../lib/image';
 import { CARD_DESIGNS } from '../../lib/card-designs';
+import type { PageDesign } from '../../lib/page-design';
+import { resolveDesign, templateDesign } from '../../lib/page-design';
+import DesignStudio, { withHeaderTag } from './DesignStudio';
+import type { StudioBackground } from './DesignStudio';
 import { useSession } from './session';
 
 const ACCENTS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#db2777', '#18181b'];
@@ -62,6 +67,14 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
   const [removeLogo, setRemoveLogo] = useState(false);
   const [photoStyle, setPhotoStyle] = useState<'avatar' | 'logo'>(initial?.photo_style === 'logo' ? 'logo' : 'avatar');
   const [designStyle, setDesignStyle] = useState<CardDesign>(initial?.design_style ?? 'executive');
+  // Page designer: kept in memory while the classic mode is selected, so
+  // switching back and forth never loses work; saved only in page mode.
+  const [designMode, setDesignMode] = useState<'classic' | 'page'>(initial?.design_config ? 'page' : 'classic');
+  const [pageDesign, setPageDesign] = useState<PageDesign | null>(() => resolveDesign(initial?.design_config));
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [backgroundFile, setBackgroundFile] = useState<File | null>(null);
+  const [backgroundPreview, setBackgroundPreview] = useState<string | null>(null);
+  const [removeBackground, setRemoveBackground] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
@@ -92,10 +105,42 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
     return () => URL.revokeObjectURL(url);
   }, [logoFile]);
 
+  useEffect(() => {
+    if (!backgroundFile) {
+      setBackgroundPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(backgroundFile);
+    setBackgroundPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [backgroundFile]);
+
   const fieldErrors = fieldErrorTexts(t, error);
   const shownPhoto = photoPreview ?? (!removePhoto && initial ? cardPhotoUrl(initial) : null);
   const shownLogo = logoPreview ?? (!removeLogo && initial ? cardLogoUrl(initial) : null);
   const previewName = displayName({ first_name: values.first_name || null, last_name: values.last_name || null }) || values.organization || '—';
+  const storedBackground = initial ? cardBackgroundUrl(initial) : null;
+  const shownBackground = backgroundPreview ?? (removeBackground ? null : storedBackground);
+
+  // What the visitor would see, built from the unsaved form (page designer previews).
+  const previewCard = useMemo<PublicCard>(() => {
+    const text = Object.fromEntries((Object.keys(INPUTS) as FieldKey[]).map((k) => [k, values[k].trim() || null])) as Record<FieldKey, string | null>;
+    return { ...text, accent_color: accent, photo_style: photoStyle, design_style: designStyle, design_config: null, code: initial?.code ?? '', photo: null, logo: null, background: null };
+  }, [values, accent, photoStyle, designStyle, initial?.code]);
+  const previewAssets = useMemo(() => ({ photo: shownPhoto, logo: shownLogo }), [shownPhoto, shownLogo]);
+
+  function choosePageMode() {
+    setDesignMode('page');
+    if (!pageDesign) setPageDesign(withHeaderTag(templateDesign('porcelain'), null, t('page.headerTag')));
+    setStudioOpen(true);
+  }
+
+  function applyStudio(design: PageDesign, bg: StudioBackground) {
+    setPageDesign(design);
+    setBackgroundFile(bg.file);
+    setRemoveBackground(bg.removed);
+    setStudioOpen(false);
+  }
 
   async function onSubmit(ev: FormEvent) {
     ev.preventDefault();
@@ -104,6 +149,10 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
     let saved: Card | null = null;
     try {
       const payload: CardInput = { ...values, accent_color: accent, status, photo_style: photoStyle, design_style: designStyle };
+      // Only touch design_config when there is one to write or clear: an
+      // install that has not re-run bootstrap keeps saving classic cards.
+      if (designMode === 'page' && pageDesign) payload.design_config = pageDesign;
+      else if (initial?.design_config) payload.design_config = null;
       if (initial) {
         if (isAdmin && ownerId && ownerId !== initial.owner?.id) payload.owner_id = ownerId;
         saved = await updateCard(initial.id, payload);
@@ -130,6 +179,12 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
     try {
       if (logoFile) saved = await uploadCardLogo(saved.id, logoFile);
       else if (removeLogo && saved.logo) saved = await deleteCardLogo(saved.id);
+    } catch (e) {
+      warning ??= e;
+    }
+    try {
+      if (backgroundFile) saved = await uploadCardBackground(saved.id, await shrinkImage(backgroundFile, 2000));
+      else if (removeBackground && saved.background) saved = await deleteCardBackground(saved.id);
     } catch (e) {
       warning ??= e;
     }
@@ -242,21 +297,55 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
                 </div>
               </div>
               <div className="sm:col-span-2">
-                <span className="label">{t('form.design')}</span>
-                <div className="design-gallery">
-                  {CARD_DESIGNS.map((design) => (
+                <span className="label">{t('form.designMode')}</span>
+                <div className="mb-3 inline-flex rounded-lg border border-line bg-surface p-0.5 text-xs font-medium" role="group" aria-label={t('form.designMode')}>
+                  {(['classic', 'page'] as const).map((m) => (
                     <button
-                      key={design.id}
+                      key={m}
                       type="button"
-                      aria-pressed={designStyle === design.id}
-                      onClick={() => setDesignStyle(design.id)}
-                      className={`design-choice ${designStyle === design.id ? 'design-choice-active' : ''}`}
+                      aria-pressed={designMode === m}
+                      onClick={() => (m === 'page' ? choosePageMode() : setDesignMode('classic'))}
+                      className={`h-8 rounded-md px-3 ${designMode === m ? 'bg-fg/10 text-fg' : 'text-muted hover:text-fg'}`}
                     >
-                      <span className="design-swatch" style={{ '--swatch-accent': accent, background: design.swatch } as CSSProperties} />
-                      <span className="min-w-0"><span className="block truncate">{design.label}</span><span className="block text-[10px] font-normal text-muted">{design.family}</span></span>
+                      {m === 'classic' ? t('form.modeClassic') : t('form.modePage')}
                     </button>
                   ))}
                 </div>
+                {designMode === 'classic' ? (
+                  <>
+                    <span className="label">{t('form.design')}</span>
+                    <div className="design-gallery">
+                      {CARD_DESIGNS.map((design) => (
+                        <button
+                          key={design.id}
+                          type="button"
+                          aria-pressed={designStyle === design.id}
+                          onClick={() => setDesignStyle(design.id)}
+                          className={`design-choice ${designStyle === design.id ? 'design-choice-active' : ''}`}
+                        >
+                          <span className="design-swatch" style={{ '--swatch-accent': accent, background: design.swatch } as CSSProperties} />
+                          <span className="min-w-0"><span className="block truncate">{design.label}</span><span className="block text-[10px] font-normal text-muted">{design.family}</span></span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  pageDesign && (
+                    <div className="flex flex-wrap items-center gap-4 rounded-xl border border-line bg-surface p-3">
+                      <PagePreview card={previewCard} design={pageDesign} assets={{ ...previewAssets, background: shownBackground }} scale={0.24} height={560} />
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <p className="text-sm font-semibold">
+                          {t('form.pageSummary', { name: t(`studio.templates.${pageDesign.template}`), count: pageDesign.blocks.filter((b) => !b.hidden).length })}
+                        </p>
+                        <p className="text-xs text-muted">{t('form.pageHint')}</p>
+                        {backgroundFile && <p className="text-xs text-muted">{t('form.backgroundPending')}</p>}
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => setStudioOpen(true)}>
+                          {t('form.openStudio')}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
             </div>
           </fieldset>
@@ -350,6 +439,18 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
         <p role="alert" className="mt-4 text-sm text-danger">
           {isApiError(error) && error.code === 'CARD_LIMIT' ? t('errors.CARD_LIMIT', { max: error.fields?.max ?? 20 }) : errorText(t, error)}
         </p>
+      )}
+
+      {studioOpen && pageDesign && (
+        <DesignStudio
+          initial={pageDesign}
+          card={previewCard}
+          assets={previewAssets}
+          background={{ url: storedBackground, file: backgroundFile, removed: removeBackground }}
+          accent={accent}
+          onApply={applyStudio}
+          onClose={() => setStudioOpen(false)}
+        />
       )}
 
       <div className="mt-5 flex flex-wrap gap-2 border-t border-line pt-4">

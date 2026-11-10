@@ -11,6 +11,18 @@ QR-VCard turns a contact profile into a cohesive digital identity: thirty respon
 - The panel's signature studio renders a 1200×360 PNG and copies rich HTML for email clients.
 - Existing installations must run `npm run directus:bootstrap` once to add the idempotent `design_style` field before saving the new design selection.
 
+### Page designer
+
+Besides the 30 classic cards, a card can be published as a full page built in the panel's **design studio**:
+
+- **8 page templates**: Porcelain, Cover, Aurora, Minimal, Bold, Noir, Pattern and Sunset. Picking one is a starting point, not a lock-in. Switching templates keeps the texts you wrote and the blocks you added.
+- **Blocks** can be reordered, hidden, removed or added. The block types are header/logo, identity (name, title, Save/Share), contact details (rows, tiles or buttons, with chosen fields in your order), the card's note, free text, a link button, the QR card, a divider and a footer.
+- **Style**: separate light and dark palettes (visitors can toggle between them), body and heading fonts, name size, corner radius, alignment, button shape and colour, glass/card/flat panels, avatar shape, size, ring and online dot, and the quick-action dock.
+- **Backgrounds** for the identity area and for the whole page: colour, gradient, pattern, or an uploaded image with a veil and blur.
+- **Fonts**: Onest, Manrope, Space Grotesk, Fraunces and Playfair Display are self-hosted, using latin and latin-ext subsets only, so Turkish characters render. The CSP keeps `font-src 'self'`.
+- **Storage**: the design is stored in `vcards.design_config` (JSON) and the background image in `vcards.background`. Bootstrap adds both idempotently. The server validates every design strictly, against the schema in `server/design-config.mjs`, which the browser shares. Colours must be `#rrggbb`; everything else is an enum or a clamped number. Link targets must be https. No free-form CSS or URL ever reaches a style.
+- A card with no `design_config` renders exactly as before.
+
 Digital business cards with QR codes. **Administrators** manage everything — every
 card and every account. **Users** create and manage only their own cards and share
 them as QR codes that resolve to a short URL (`/c/<code>`). Opening that URL shows

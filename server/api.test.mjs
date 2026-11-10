@@ -470,6 +470,50 @@ describe('card isolation for plain users', () => {
   });
 });
 
+describe('page designer', () => {
+  it('saves a design document and serves it on the public card', async () => {
+    const cookie = await signIn('ada@example.com', 'ada-pass');
+    const saved = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie, body: { design_config: { template: 'noir', theme: { mode: 'dark' } } } });
+    expect(saved.status).toBe(200);
+    expect(saved.json.data.design_config.template).toBe('noir');
+    expect(saved.json.data.design_config.theme.mode).toBe('dark');
+    const pub = await call('GET', '/api/public/cards/adaCard');
+    expect(pub.json.data.design_config.template).toBe('noir');
+
+    const bad = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie, body: { design_config: { theme: { light: { accent: 'url(x)' } } } } });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error.fields).toEqual({ design_config: 'invalid' });
+  });
+
+  it('stores, exposes and removes a page background image', async () => {
+    const cookie = await signIn('ada@example.com', 'ada-pass');
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const uploaded = await call('POST', `/api/cards/${ID.adaCard}/background`, { cookie, body: png });
+    expect(uploaded.status).toBe(200);
+    const fileId = uploaded.json.data.background;
+    expect(fileId).toBeTruthy();
+    expect(directus.db.cards.find((card) => card.id === ID.adaCard).background).toBe(fileId);
+    // The public DTO carries a cache-buster, not the file id.
+    const pub = await call('GET', '/api/public/cards/adaCard');
+    expect(pub.json.data.background).toBe(String(fileId).slice(0, 8));
+
+    const refused = await call('POST', `/api/cards/${ID.adaCard}/background`, { cookie, body: Buffer.from('<svg onload=alert(1)>') });
+    expect(refused.status).toBe(415);
+
+    const removed = await call('DELETE', `/api/cards/${ID.adaCard}/background`, { cookie });
+    expect(removed.status).toBe(200);
+    expect(removed.json.data.background).toBeNull();
+    expect(directus.db.files.some((f) => f.id === fileId)).toBe(false);
+  });
+
+  it('does not let another user replace a card background', async () => {
+    const cookie = await signIn('bob@example.com', 'bob-pass');
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const r = await call('POST', `/api/cards/${ID.adaCard}/background`, { cookie, body: png });
+    expect([403, 404]).toContain(r.status);
+  });
+});
+
 describe('privileged roles', () => {
   it('shows admins every card with its owner', async () => {
     const cookie = await signIn('admin@example.com', 'admin-pass');

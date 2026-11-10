@@ -175,6 +175,8 @@ async function main() {
           { field: 'design_style', type: 'string', meta: { interface: 'select-dropdown', options: { choices: DESIGN_CHOICES }, default_value: 'executive', width: 'half' }, schema: { default_value: 'executive', max_length: 16 } },
           { field: 'photo', type: 'uuid', meta: { special: ['file'], interface: 'file-image' } },
           { field: 'logo', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Corporate logo shown alongside the person photo' } },
+          { field: 'design_config', type: 'json', meta: { interface: 'input-code', options: { language: 'json' }, note: 'Page designer document (managed by the QR-VCard server; empty = classic design)' } },
+          { field: 'background', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Page designer background image' } },
         ],
       },
     });
@@ -362,6 +364,26 @@ async function main() {
       body: { field: 'logo', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Corporate logo shown alongside the person photo' } },
     });
     console.log('[bootstrap] field vcards.logo created');
+  }
+
+  // Page designer: the layout/style document and its background image.
+  const hasDesignConfig = await api('/fields/vcards/design_config', { token: adminToken }).then(() => true, () => false);
+  if (!hasDesignConfig) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'design_config', type: 'json', meta: { interface: 'input-code', options: { language: 'json' }, note: 'Page designer document (managed by the QR-VCard server; empty = classic design)' } },
+    });
+    console.log('[bootstrap] field vcards.design_config created');
+  }
+  const hasBackground = await api('/fields/vcards/background', { token: adminToken }).then(() => true, () => false);
+  if (!hasBackground) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'background', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Page designer background image' } },
+    });
+    console.log('[bootstrap] field vcards.background created');
   }
 
   const hasDesignStyle = await api('/fields/vcards/design_style', { token: adminToken }).then(() => true, () => false);

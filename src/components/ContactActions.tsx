@@ -1,53 +1,16 @@
-import { useState } from 'react';
+import { useSaveContact } from '../hooks/useSaveContact';
 import { useI18n } from '../i18n';
 import type { PublicCard } from '../lib/api';
-import { displayName, publicLogoUrl, publicPhotoUrl } from '../lib/api';
-import { blobToBase64, generateContactPhoto } from '../lib/image';
-import { contactFromCard, downloadVcf } from '../lib/vcf';
+import { displayName } from '../lib/api';
 
 export default function ContactActions({ card }: { card: PublicCard }) {
   const { t } = useI18n();
-  const [busy, setBusy] = useState(false);
   const tel = card.phone?.replace(/[^\d+]/g, '') ?? null;
   // The stored value IS the canonical wa.me link when set; only fall back to
   // deriving it from the phone for cards saved before the social fields.
   const wa = card.whatsapp ?? (card.phone ? `https://wa.me/${card.phone.replace(/[^\d]/g, '')}` : null);
   const name = displayName(card) || card.organization || t('scan.contact');
-
-  async function addToContacts() {
-    setBusy(true);
-    try {
-      const contact = contactFromCard(card);
-      // Embed the photo so it lands in the address book too; a failure just
-      // leaves it out rather than blocking the contact.
-      const photoUrl = publicPhotoUrl(card, 'jpg');
-      let photo: Blob | null = null;
-      if (photoUrl) {
-        try {
-          const res = await fetch(photoUrl);
-          if (res.ok) photo = await res.blob();
-        } catch {
-          /* generated fallback below */
-        }
-      }
-      if (!photo) {
-        const logoUrl = publicLogoUrl(card, 'jpg');
-        if (logoUrl) {
-          try {
-            const res = await fetch(logoUrl);
-            if (res.ok) photo = await res.blob();
-          } catch {
-            /* generated fallback below */
-          }
-        }
-      }
-      photo ??= await generateContactPhoto({ name, organization: card.organization, accent: card.accent_color, design: card.design_style });
-      contact.photo = { base64: await blobToBase64(photo), type: 'JPEG' };
-      downloadVcf(contact);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const { save: addToContacts, busy } = useSaveContact(card, name);
 
   return (
     <div className="card-actions">

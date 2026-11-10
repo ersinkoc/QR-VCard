@@ -3,12 +3,14 @@ import type { CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import CardIdentity, { cardDesign } from '../components/CardIdentity';
 import ContactActions from '../components/ContactActions';
+import PageCard from '../components/page/PageCard';
 import CopyButton from '../components/CopyButton';
 import LanguageSwitch from '../components/LanguageSwitch';
 import QrDisplay from '../components/QrDisplay';
 import { useI18n } from '../i18n';
 import type { PublicCard } from '../lib/api';
-import { displayName, fetchPublicCard, fetchPublicUserCard, publicLogoUrl, publicPhotoUrl, shortUrl } from '../lib/api';
+import { displayName, fetchPublicCard, fetchPublicUserCard, publicBackgroundUrl, publicLogoUrl, publicPhotoUrl, shortUrl } from '../lib/api';
+import { resolveDesign } from '../lib/page-design';
 import type { QrStyle } from '../lib/qr';
 import { qrDownloadUrl } from '../lib/qr';
 
@@ -79,6 +81,21 @@ export default function ScanPage({ byUsername = false }: { byUsername?: boolean 
   }
 
   const { card } = state;
+  // Page-designer cards render their own layout; the rest keep the classic skins.
+  const pageDesign = resolveDesign(card.design_config);
+  if (pageDesign) {
+    return (
+      <main>
+        <PageCard
+          card={card}
+          design={pageDesign}
+          assets={{ photo: publicPhotoUrl(card), logo: publicLogoUrl(card), background: publicBackgroundUrl(card) }}
+          footerLink={<Link to="/" className="pc-powered">{t('scan.poweredBy')}</Link>}
+        />
+      </main>
+    );
+  }
+
   const url = shortUrl(card.code);
   const design = cardDesign(card);
   const contactRows = [card.phone, card.email, card.website?.replace(/^https?:\/\//, ''), card.address].filter(Boolean) as string[];

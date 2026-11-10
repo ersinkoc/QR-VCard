@@ -3,6 +3,7 @@
  * CODES (not sentences): the client translates them, so the API stays language-free.
  */
 import { randomInt } from 'node:crypto';
+import { validateDesignConfig } from './design-config.mjs';
 
 export const CARD_LIMITS = {
   first_name: 80,
@@ -209,6 +210,13 @@ export function validateCardInput(input, { partial = false } = {}) {
   if ('design_style' in src) {
     if (CARD_DESIGNS.has(src.design_style)) data.design_style = src.design_style;
     else errors.design_style = 'invalid';
+  }
+
+  // The page designer's document (null = classic `design_style` card).
+  if ('design_config' in src) {
+    const { value, error } = validateDesignConfig(src.design_config);
+    if (error) errors.design_config = error;
+    else data.design_config = value;
   }
 
   if (!partial && !data.first_name && !data.last_name && !data.organization && !errors.first_name) {

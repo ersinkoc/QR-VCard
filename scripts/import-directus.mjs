@@ -44,7 +44,7 @@ const USER_WRITE_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', '
 
 /** Fields that may legally reject a write; retried without them one by one. */
 const USER_DROPPABLE = ['qrv_session_epoch', 'username', 'avatar', 'last_access', 'last_page', 'id'];
-const CARD_DROPPABLE = ['user_created', 'date_created', 'photo', 'id'];
+const CARD_DROPPABLE = ['user_created', 'date_created', 'photo', 'logo', 'background', 'design_config', 'id'];
 const ROW_DROPPABLE = ['id'];
 
 /** Body for POST /users: whitelisted fields, mapped role + avatar, password. Exported for tests. */
@@ -59,11 +59,16 @@ export function userPayload(row, { roleId = null, password = null, fileMap = new
   return out;
 }
 
-/** Body for POST /items/vcards: owner/photo ids mapped onto the target instance. Exported for tests. */
+/** Body for POST /items/vcards: owner/photo/logo/background ids mapped onto the target instance. Exported for tests. */
 export function cardPayload(row, { userMap = new Map(), fileMap = new Map() } = {}) {
   const out = { ...row };
   out.owner = row.owner ? (userMap.get(row.owner) ?? null) : null;
   out.photo = row.photo ? (fileMap.get(row.photo) ?? null) : null;
+  // Image fields added later: only remap the ones the export actually has, so
+  // an older export never writes columns the target may not know.
+  for (const f of ['logo', 'background']) {
+    if (f in row) out[f] = row[f] ? (fileMap.get(row[f]) ?? null) : null;
+  }
   delete out.user_created;
   return out;
 }

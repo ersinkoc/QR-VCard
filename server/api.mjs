@@ -24,10 +24,12 @@
  *   POST   /api/cards/:id/photo         raw image body (jpeg/png/webp, <= 4 MB)
  *   DELETE /api/cards/:id/photo
  *   GET|POST|DELETE /api/cards/:id/logo separate corporate logo image
+ *   GET|POST|DELETE /api/cards/:id/background page-designer background image
  *
  *   GET    /api/public/cards/:code      published card, public fields only
  *   GET    /api/public/cards/:code/photo[?format=jpg]
  *   GET    /api/public/cards/:code/logo[?format=jpg]
+ *   GET    /api/public/cards/:code/background
  *
  *   GET    /api/users?q=                admin: accounts with card counts
  *   POST   /api/users                   admin
@@ -53,10 +55,10 @@ const PHOTO_LIMIT = 4 * 1024 * 1024;
 const USER_CACHE_MS = 10_000;
 const EPOCH_FIELD = 'qrv_session_epoch';
 
-const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'qrv_views', 'is_primary', 'date_created', 'owner'];
+const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'qrv_views', 'is_primary', 'date_created', 'owner'];
 /** The card↔collaborator junction (qrv_card_access): rows granting people access to a card. */
 const ACCESS_FIELDS = ['id', 'card', 'user', 'expires_on'];
-const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style'];
+const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background'];
 const USER_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', 'last_access', 'username', 'role.id', 'role.name'];
 const AUDIT_FIELDS = ['id', 'date_created', 'actor', 'actor_email', 'action', 'target', 'detail'];
 const AUDIT_COLLECTION = 'qrv_audit_log';
@@ -194,6 +196,7 @@ function publicCardDto(row) {
   // The file id doubles as a cache-buster; it grants nothing on its own, because
   // photos are only ever served through this API.
   dto.photo = row.photo ? String(row.photo).slice(0, 8) : null;
+  dto.background = row.background ? String(row.background).slice(0, 8) : null;
   return dto;
 }
 
@@ -299,6 +302,10 @@ export function createApiHandler(config) {
   // the default Executive style until an older install re-runs bootstrap.
   let designStylesSupported = true;
   let logosSupported = true;
+  // The page designer (design_config + its background image) is additive too:
+  // missing columns → cards render their classic design until bootstrap runs.
+  let designConfigSupported = true;
+  let backgroundsSupported = true;
   // `directus_users.username` (the /<username> short URL) degrades like the
   // view fields: missing column → one warning, usernames resolve to nothing,
   // /c/<code> keeps working.
@@ -334,6 +341,20 @@ export function createApiHandler(config) {
         fieldsForCards = fieldsForCards.filter((f) => f !== 'design_style');
         log.warn?.('[api] vcards.design_style is missing — re-run npm run directus:bootstrap; cards use the Executive design');
         if (query?.fields) query.fields = query.fields.filter((f) => f !== 'design_style');
+        return cardsRequest(path, { method, query, body });
+      }
+      if (designConfigSupported && err instanceof DirectusError && String(err.message).includes('design_config')) {
+        designConfigSupported = false;
+        fieldsForCards = fieldsForCards.filter((f) => f !== 'design_config');
+        log.warn?.('[api] vcards.design_config is missing — re-run npm run directus:bootstrap; the page designer is off');
+        if (query?.fields) query.fields = query.fields.filter((f) => f !== 'design_config');
+        return cardsRequest(path, { method, query, body });
+      }
+      if (backgroundsSupported && err instanceof DirectusError && String(err.message).includes('background')) {
+        backgroundsSupported = false;
+        fieldsForCards = fieldsForCards.filter((f) => f !== 'background');
+        log.warn?.('[api] vcards.background is missing — re-run npm run directus:bootstrap; page background images are off');
+        if (query?.fields) query.fields = query.fields.filter((f) => f !== 'background');
         return cardsRequest(path, { method, query, body });
       }
       if (logosSupported && err instanceof DirectusError && String(err.message).includes('logo')) {
@@ -726,6 +747,7 @@ export function createApiHandler(config) {
     await directus.request(`/items/vcards/${card.id}`, { method: 'DELETE' });
     await deleteFileQuietly(card.photo);
     await deleteFileQuietly(card.logo);
+    await deleteFileQuietly(card.background);
     if (card.is_primary) await promotePrimary(card.owner);
     audit({ req, actor, action: 'card.delete', target: card.code, detail: `name: ${[card.first_name, card.last_name].filter(Boolean).join(' ') || card.organization || '—'}, owner: ${card.owner ?? 'none'}` });
     sendJson(res, 200, { data: null });
@@ -738,13 +760,15 @@ export function createApiHandler(config) {
    */
   async function streamCardImage(res, card, { field, format, cache }) {
     const jpg = format === 'jpg';
-    const logo = field === 'logo' || card.photo_style === 'logo';
+    const logo = field === 'logo' || (field === 'photo' && card.photo_style === 'logo');
+    // A page background is a wide cover image: keep its shape at screen size.
+    const wide = field === 'background';
     const upstream = await directus.request(`/assets/${card[field]}`, {
       raw: true,
       query: {
-        width: 512,
-        height: 512,
-        fit: logo ? 'inside' : 'cover',
+        width: wide ? 1600 : 512,
+        height: wide ? 1600 : 512,
+        fit: logo || wide ? 'inside' : 'cover',
         quality: 82,
         format: jpg ? 'jpg' : 'webp',
         ...(jpg ? { transforms: JSON.stringify([['flatten', { background: '#ffffff' }]]) } : {}),
@@ -822,6 +846,44 @@ export function createApiHandler(config) {
     const card = await managedCard(params.id, actor, fieldsForCards);
     const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: null }, query: { fields: CARD_FIELDS } });
     await deleteFileQuietly(card.logo);
+    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
+    sendJson(res, 200, { data: cardDto(updated, owners) });
+  }
+
+  async function getCardBackground({ res, actor, params }) {
+    const card = await managedCard(params.id, actor, fieldsForCards);
+    if (!card.background) throw new ApiError(404, 'NOT_FOUND');
+    await streamCardImage(res, card, { field: 'background', cache: 'private, max-age=300' });
+  }
+
+  async function uploadCardBackground({ req, res, actor, params }) {
+    if (!backgroundsSupported) throw new ApiError(501, 'NOT_SUPPORTED', 're-run npm run directus:bootstrap to enable page backgrounds');
+    const card = await managedCard(params.id, actor, fieldsForCards);
+    const buf = await readRaw(req, PHOTO_LIMIT).catch((err) => {
+      if (err instanceof ApiError && err.code === 'PAYLOAD_TOO_LARGE') throw new ApiError(413, 'PHOTO_TOO_LARGE');
+      throw err;
+    });
+    const type = sniffImage(buf);
+    if (!type) throw new ApiError(415, 'PHOTO_TYPE', 'use a JPEG, PNG or WebP image');
+    const form = new FormData();
+    form.append('title', `vcard background ${card.code}`);
+    form.append('file', new Blob([buf], { type }), `vcard-background-${card.code}.${PHOTO_TYPES[type]}`);
+    const file = await directus.request('/files', { method: 'POST', body: form });
+    const updated = await cardsRequest(`/items/vcards/${card.id}`, { method: 'PATCH', body: { background: file.id }, query: { fields: fieldsForCards } });
+    await deleteFileQuietly(card.background);
+    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
+    sendJson(res, 200, { data: cardDto(updated, owners) });
+  }
+
+  async function deleteCardBackground({ res, actor, params }) {
+    const card = await managedCard(params.id, actor, fieldsForCards);
+    if (!card.background) {
+      const owners = canSeeAllCards(actor.kind) ? await ownersFor([card.owner]) : null;
+      sendJson(res, 200, { data: cardDto(card, owners) });
+      return;
+    }
+    const updated = await cardsRequest(`/items/vcards/${card.id}`, { method: 'PATCH', body: { background: null }, query: { fields: fieldsForCards } });
+    await deleteFileQuietly(card.background);
     const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
     sendJson(res, 200, { data: cardDto(updated, owners) });
   }
@@ -984,6 +1046,12 @@ function dayString(msOrDate) {
     const card = await publishedByCode(params.code);
     if (!card?.logo) throw new ApiError(404, 'NOT_FOUND');
     await streamCardImage(res, card, { field: 'logo', format: url.searchParams.get('format'), cache: 'public, max-age=300' });
+  }
+
+  async function getPublicBackground({ res, params }) {
+    const card = await publishedByCode(params.code);
+    if (!card?.background) throw new ApiError(404, 'NOT_FOUND');
+    await streamCardImage(res, card, { field: 'background', cache: 'public, max-age=300' });
   }
 
   async function listUsers({ res, url }) {
@@ -1429,7 +1497,7 @@ function dayString(msOrDate) {
     if (target.id === (await getServiceUserId())) throw new ApiError(409, 'SERVICE_ACCOUNT', 'this account’s token runs the app; it cannot be deleted');
     await assertAdminRemains(target, { deleting: true });
     const mode = url.searchParams.get('cards') === 'transfer' ? 'transfer' : 'delete';
-    const cards = (await directus.request('/items/vcards', { query: { fields: ['id', 'photo', 'logo'], filter: { owner: { _eq: target.id } }, limit: -1 } })) ?? [];
+    const cards = (await directus.request('/items/vcards', { query: { fields: ['id', 'photo', 'logo', ...(backgroundsSupported ? ['background'] : [])], filter: { owner: { _eq: target.id } }, limit: -1 } })) ?? [];
     // Access rows pointing at the deleted user (as collaborator) are garbage.
     if (accessSupported) {
       await accessRequest(`/items/${ACCESS_COLLECTION}`, { method: 'DELETE', body: { query: { filter: { user: { _eq: target.id } } } } }).catch(() => {});
@@ -1443,6 +1511,7 @@ function dayString(msOrDate) {
         for (const c of cards) {
           await deleteFileQuietly(c.photo);
           await deleteFileQuietly(c.logo);
+          await deleteFileQuietly(c.background);
         }
       }
     }
@@ -1474,6 +1543,7 @@ function dayString(msOrDate) {
     ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)$/, getPublicCard, 'none'],
     ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)\/photo$/, getPublicPhoto, 'none'],
     ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)\/logo$/, getPublicLogo, 'none'],
+    ['GET', /^\/api\/public\/cards\/(?<code>[^/]+)\/background$/, getPublicBackground, 'none'],
     ['GET', /^\/api\/me$/, getMe, 'user'],
     ['PATCH', /^\/api\/me$/, patchMe, 'user'],
     ['POST', /^\/api\/me\/password$/, changeMyPassword, 'user'],
@@ -1490,6 +1560,9 @@ function dayString(msOrDate) {
     ['GET', /^\/api\/cards\/(?<id>[^/]+)\/logo$/, getCardLogo, 'user'],
     ['POST', /^\/api\/cards\/(?<id>[^/]+)\/logo$/, uploadCardLogo, 'user'],
     ['DELETE', /^\/api\/cards\/(?<id>[^/]+)\/logo$/, deleteCardLogo, 'user'],
+    ['GET', /^\/api\/cards\/(?<id>[^/]+)\/background$/, getCardBackground, 'user'],
+    ['POST', /^\/api\/cards\/(?<id>[^/]+)\/background$/, uploadCardBackground, 'user'],
+    ['DELETE', /^\/api\/cards\/(?<id>[^/]+)\/background$/, deleteCardBackground, 'user'],
     ['GET', /^\/api\/cards\/(?<id>[^/]+)\/shares$/, listCardShares, 'user'],
     ['POST', /^\/api\/cards\/(?<id>[^/]+)\/shares$/, addCardShare, 'user'],
     ['PATCH', /^\/api\/cards\/(?<id>[^/]+)\/shares\/(?<userId>[^/]+)$/, patchCardShare, 'user'],
