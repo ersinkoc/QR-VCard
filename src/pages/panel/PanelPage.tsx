@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Link, Navigate, NavLink, Route, Routes } from 'react-router-dom';
+import Avatar from '../../components/Avatar';
+import Icon from '../../components/Icon';
+import type { IconName } from '../../components/Icon';
 import LanguageSwitch from '../../components/LanguageSwitch';
 import BrandMark from '../../components/BrandMark';
 import { errorText, useI18n } from '../../i18n';
@@ -81,57 +84,91 @@ function LoginScreen({ expired, onLoggedIn }: { expired: boolean; onLoggedIn: (m
   );
 }
 
+/**
+ * Desktop: a fixed sidebar (brand, sections with icons, the signed-in person
+ * at the foot). Phones and tablets: a compact top bar whose sections scroll
+ * sideways on one line instead of wrapping.
+ */
 function PanelLayout({ me, onSignOut, children }: { me: Me; onSignOut: () => void; children: ReactNode }) {
   const { t } = useI18n();
-  const tab = ({ isActive }: { isActive: boolean }) =>
-    `inline-flex h-9 items-center rounded-lg px-3 text-sm font-medium transition-colors ${isActive ? 'bg-fg/10 text-fg' : 'text-muted hover:text-fg'}`;
+  const admin = me.role === 'admin';
+  const sections: { to: string; label: string; icon: IconName; end?: boolean }[] = [
+    { to: '/panel', label: t('nav.cards'), icon: 'cards', end: true },
+    ...(admin
+      ? ([
+          { to: '/panel/institutions', label: t('nav.institutions'), icon: 'building' },
+          { to: '/panel/users', label: t('nav.users'), icon: 'users' },
+          { to: '/panel/audit', label: t('nav.audit'), icon: 'history' },
+        ] as const)
+      : []),
+    { to: '/panel/account', label: t('nav.account'), icon: 'user' },
+  ];
+  const side = ({ isActive }: { isActive: boolean }) =>
+    `flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors ${isActive ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-fg/5 hover:text-fg'}`;
+  const pill = ({ isActive }: { isActive: boolean }) =>
+    `inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium whitespace-nowrap transition-colors ${isActive ? 'bg-accent/10 text-accent' : 'text-muted hover:text-fg'}`;
+  const name = displayName(me) || me.email;
 
   return (
-    <div className="min-h-dvh bg-bg">
-      <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
-        <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
-          <Link to="/panel" className="flex items-center gap-2 font-semibold tracking-tight">
-            <BrandMark className="h-7 w-7 text-accent" />
-            <span>QR-VCard</span>
-          </Link>
-          <nav className="order-3 flex w-full gap-1 overflow-x-auto sm:order-none sm:w-auto" aria-label="Panel">
-            <NavLink to="/panel" end className={tab}>
-              {t('nav.cards')}
+    <div className="min-h-dvh bg-bg lg:flex">
+      <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-surface/70 px-4 py-5 lg:flex">
+        <Link to="/panel" className="flex items-center gap-2.5 px-2 font-semibold tracking-tight">
+          <BrandMark className="h-8 w-8 text-accent" />
+          <span className="text-[15px]">QR-VCard</span>
+        </Link>
+        <nav className="mt-8 flex flex-col gap-1" aria-label="Panel">
+          {sections.map((s) => (
+            <NavLink key={s.to} to={s.to} end={s.end} className={side}>
+              <Icon name={s.icon} />
+              {s.label}
             </NavLink>
-            {me.role === 'admin' && (
-              <NavLink to="/panel/institutions" className={tab}>
-                {t('nav.institutions')}
-              </NavLink>
-            )}
-            {me.role === 'admin' && (
-              <NavLink to="/panel/users" className={tab}>
-                {t('nav.users')}
-              </NavLink>
-            )}
-            {me.role === 'admin' && (
-              <NavLink to="/panel/audit" className={tab}>
-                {t('nav.audit')}
-              </NavLink>
-            )}
-            <NavLink to="/panel/account" className={tab}>
-              {t('nav.account')}
-            </NavLink>
-          </nav>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="hidden text-right leading-tight md:block">
-              <p className="max-w-48 truncate text-sm font-medium">{displayName(me) || me.email}</p>
+          ))}
+        </nav>
+        <div className="mt-auto space-y-3 border-t border-line pt-4">
+          <div className="flex items-center gap-3 px-1">
+            <Avatar name={name} size={36} />
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-sm font-medium">{name}</p>
               <p className="text-xs text-muted">{t(`roles.${me.role}`)}</p>
             </div>
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <LanguageSwitch />
             <button type="button" className="btn btn-ghost btn-sm" onClick={onSignOut}>
+              <Icon name="logout" size={16} />
               {t('auth.signOut')}
             </button>
           </div>
         </div>
-      </header>
-      <main className="mx-auto w-full max-w-5xl px-4 pt-6" style={{ paddingBottom: 'max(3rem, env(safe-area-inset-bottom))' }}>
-        {children}
-      </main>
+      </aside>
+
+      <div className="min-w-0 flex-1">
+        <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur lg:hidden" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+          <div className="flex items-center gap-3 px-4 pt-3">
+            <Link to="/panel" className="flex items-center gap-2 font-semibold tracking-tight">
+              <BrandMark className="h-7 w-7 text-accent" />
+              <span>QR-VCard</span>
+            </Link>
+            <div className="ml-auto flex items-center gap-2">
+              <LanguageSwitch />
+              <button type="button" className="btn btn-ghost btn-sm px-2.5" onClick={onSignOut} aria-label={t('auth.signOut')} title={t('auth.signOut')}>
+                <Icon name="logout" />
+              </button>
+            </div>
+          </div>
+          <nav className="flex gap-1 overflow-x-auto px-3 py-2 [scrollbar-width:none]" aria-label="Panel">
+            {sections.map((s) => (
+              <NavLink key={s.to} to={s.to} end={s.end} className={pill}>
+                <Icon name={s.icon} size={16} />
+                {s.label}
+              </NavLink>
+            ))}
+          </nav>
+        </header>
+        <main className="mx-auto w-full max-w-6xl px-4 pt-6 sm:px-6 lg:px-10 lg:pt-10" style={{ paddingBottom: 'max(3rem, env(safe-area-inset-bottom))' }}>
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

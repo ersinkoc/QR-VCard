@@ -1359,6 +1359,84 @@ describe('institutions', () => {
     expect(directus.db.audit.map((a) => a.action)).toContain('institution.delete');
   });
 
+  it('limits a restricted account to its institutions: listing and linking, never its existing link', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const a = await createInstitution(admin, { name: 'Alfa' });
+    const b = await createInstitution(admin, { name: 'Beta' });
+    const ada = await signIn('ada@example.com', 'ada-pass');
+    const names = async (cookie) => (await call('GET', '/api/institutions', { cookie })).json.data.map((i) => i.name);
+    // Default: every institution, as before the feature.
+    expect(await names(ada)).toEqual(['Alfa', 'Beta']);
+    expect((await call('GET', '/api/users', { cookie: admin })).json.data.find((u) => u.id === ID.ada).institutions).toBeNull();
+
+    const set = await call('PATCH', `/api/users/${ID.ada}`, { cookie: admin, body: { institutions: [a.id] } });
+    expect(set.status).toBe(200);
+    expect(set.json.data.institutions).toEqual([a.id]);
+    expect(await names(ada)).toEqual(['Alfa']);
+    // An account cannot lift its own restriction through self-service.
+    expect((await call('PATCH', '/api/me', { cookie: ada, body: { institutions: null, first_name: 'Ada' } })).status).toBe(200);
+    expect(await names(ada)).toEqual(['Alfa']);
+    // The API is the enforcement point, not the picker.
+    expect((await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { institution: b.id } })).json.error.fields).toEqual({ institution: 'invalid' });
+    expect((await call('POST', '/api/cards', { cookie: ada, body: { institution: b.id } })).status).toBe(400);
+    expect((await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { institution: a.id } })).status).toBe(200);
+
+    // An admin links the hidden one: ada keeps editing (and re-sending it), but cannot pick it back once switched away.
+    await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: admin, body: { institution: b.id } });
+    const kept = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { institution: b.id, job_title: 'Engineer' } });
+    expect(kept.status).toBe(200);
+    expect(kept.json.data.institution).toMatchObject({ id: b.id });
+    expect((await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { institution: a.id } })).status).toBe(200);
+    expect((await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { institution: b.id } })).status).toBe(400);
+
+    // Editors are restricted like users; admins never are, even with a stored list.
+    await call('PATCH', `/api/users/${ID.editor}`, { cookie: admin, body: { institutions: [] } });
+    expect(await names(await signIn('editor@example.com', 'editor-pass'))).toEqual([]);
+    directus.db.users.find((u) => u.id === ID.admin).qrv_institution_access = [a.id];
+    expect(await names(await signIn('admin@example.com', 'admin-pass'))).toEqual(['Alfa', 'Beta']);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(directus.db.audit.find((e) => e.action === 'user.update' && e.target === 'ada@example.com')?.detail).toContain('institutions: all → 1 selected');
+  });
+
+  it('validates an access list and drops a deleted institution from it without widening it', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const a = await createInstitution(admin, { name: 'Alfa' });
+    for (const bad of ['all', [123], ['not-a-uuid'], Array.from({ length: 501 }, () => a.id)]) {
+      expect((await call('PATCH', `/api/users/${ID.ada}`, { cookie: admin, body: { institutions: bad } })).json.error.fields, JSON.stringify(bad).slice(0, 40)).toEqual({ institutions: 'invalid' });
+    }
+    expect((await call('PATCH', `/api/users/${ID.ada}`, { cookie: admin, body: { institutions: ['00000000-0000-4000-8000-0000000000ff'] } })).json.error.fields).toEqual({ institutions: 'invalid' });
+    const created = await call('POST', '/api/users', { cookie: admin, body: { email: 'carol@example.com', password: 'carol-pass-123', role: USER_ROLE.id, institutions: [a.id, a.id] } });
+    expect(created.status).toBe(201);
+    expect(created.json.data.institutions).toEqual([a.id]);
+
+    expect((await call('DELETE', `/api/institutions/${a.id}`, { cookie: admin })).status).toBe(200);
+    // Emptied, not cleared: [] still means "none", never "all".
+    expect(directus.db.users.find((u) => u.email === 'carol@example.com').qrv_institution_access).toEqual([]);
+    await createInstitution(admin, { name: 'Gamma' });
+    expect((await call('GET', '/api/institutions', { cookie: await signIn('carol@example.com', 'carol-pass-123') })).json.data).toEqual([]);
+  });
+
+  it('keeps signing in and listing when the access column is missing (pre-bootstrap installs)', async () => {
+    const plain = fakeDirectus();
+    const strict = {
+      request(path, opts = {}) {
+        if (JSON.stringify(opts.query ?? {}).includes('qrv_institution_access') || JSON.stringify(opts.body ?? {}).includes('qrv_institution_access')) {
+          throw new DirectusError(403, 'FORBIDDEN', 'You don\'t have permission to access field "qrv_institution_access" in collection "directus_users"');
+        }
+        return plain.request(path, opts);
+      },
+    };
+    api = createApiHandler({ directus: strict, sessionSecret: 'test-secret-0123456789', log: { warn() {}, error() {} } });
+    const ada = await signIn('ada@example.com', 'ada-pass');
+    expect((await call('GET', '/api/institutions', { cookie: ada })).status).toBe(200);
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    expect((await call('GET', '/api/users', { cookie: admin })).status).toBe(200);
+    // A restriction is refused loudly, never silently dropped.
+    expect((await call('PATCH', `/api/users/${ID.ada}`, { cookie: admin, body: { institutions: [] } })).status).toBe(501);
+    expect((await call('PATCH', `/api/users/${ID.ada}`, { cookie: admin, body: { first_name: 'Ada' } })).status).toBe(200);
+  });
+
   it('accepts a plain SVG logo, serves it sandboxed, and never hands it out as a JPEG', async () => {
     const admin = await signIn('admin@example.com', 'admin-pass');
     const inst = await createInstitution(admin);
@@ -1417,5 +1495,23 @@ describe('institutions', () => {
       expect(r.json.error.code, text).toBe('SVG_UNSAFE');
     }
     expect((await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: Buffer.from('hello') })).json.error.code).toBe('LOGO_TYPE');
+  });
+});
+
+describe('signature studio storage', () => {
+  it('stores a valid design on the card, refuses an invalid one and never makes it public', async () => {
+    const ada = await signIn('ada@example.com', 'ada-pass');
+    const design = { v: 1, template: 'banner', font: 'georgia', size: 'l', accent: '#0F766E', image: 'photo', shape: 'rounded', logo: false, fields: ['email', 'phone'], labels: 'full', social: 'badges', qr: true, cta: true, ctaText: 'Kartım', divider: false, disclaimer: 'Gizlidir.', lang: 'en' };
+    const saved = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { signature_config: design } });
+    expect(saved.status).toBe(200);
+    expect(saved.json.data.signature_config).toMatchObject({ template: 'banner', accent: '#0f766e', fields: ['email', 'phone'], lang: 'en' });
+
+    const bad = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { signature_config: { ...design, template: 'fancy' } } });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error.fields).toEqual({ signature_config: 'invalid' });
+
+    expect((await call('GET', '/api/public/cards/adaCard')).json.data).not.toHaveProperty('signature_config');
+    const cleared = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { signature_config: null } });
+    expect(cleared.json.data.signature_config).toBeNull();
   });
 });

@@ -63,8 +63,21 @@ const JSON_LIMIT = 64 * 1024;
 const PHOTO_LIMIT = 4 * 1024 * 1024;
 const USER_CACHE_MS = 10_000;
 const EPOCH_FIELD = 'qrv_session_epoch';
+/**
+ * Institutions a non-admin account may see and link (`directus_users` JSON):
+ * null = all, an array of ids = only those (empty = none). Admins always see all.
+ * Not named after the collection, so a missing-column error is never mistaken
+ * for a missing `qrv_institutions` collection.
+ */
+const INSTITUTION_ACCESS_FIELD = 'qrv_institution_access';
 
-const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'institution', 'qrv_views', 'is_primary', 'date_created', 'owner'];
+/** An account's institution allowlist: null (all) or the ids it may use. */
+function institutionAccess(user) {
+  const value = user?.[INSTITUTION_ACCESS_FIELD];
+  return Array.isArray(value) ? value.filter((id) => typeof id === 'string') : null;
+}
+
+const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'institution', 'signature_config', 'qrv_views', 'is_primary', 'date_created', 'owner'];
 /** The card↔collaborator junction (qrv_card_access): rows granting people access to a card. */
 const ACCESS_FIELDS = ['id', 'card', 'user', 'expires_on'];
 const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'institution'];
@@ -292,7 +305,7 @@ function meDto(user) {
 }
 
 function userDto(user, cardCount) {
-  return { ...meDto(user), status: user.status, last_access: user.last_access ?? null, card_count: cardCount ?? 0 };
+  return { ...meDto(user), status: user.status, last_access: user.last_access ?? null, card_count: cardCount ?? 0, institutions: institutionAccess(user) };
 }
 
 // --- the handler -------------------------------------------------------------
@@ -338,6 +351,9 @@ export function createApiHandler(config) {
 
   const userCache = new Map();
   let epochSupported = true;
+  // Institution access per account: missing column (bootstrap not re-run) →
+  // one warning, every account sees every institution, as before the feature.
+  let institutionAccessSupported = true;
   /**
    * The Directus account that owns DIRECTUS_TOKEN. Two kinds exist:
    *  - a dedicated service account (bootstrap's, no password): hidden from the
@@ -377,6 +393,7 @@ export function createApiHandler(config) {
   // Institutions (qrv_institutions + vcards.institution) degrade the same way:
   // missing schema → one warning, cards keep their own organisation text.
   let institutionsSupported = true;
+  let signaturesSupported = true;
   function noteInstitutionsUnsupported(err) {
     if (!institutionsSupported) return;
     institutionsSupported = false;
@@ -424,6 +441,15 @@ export function createApiHandler(config) {
         if (query?.fields) query.fields = query.fields.filter((f) => f !== 'background');
         return cardsRequest(path, { method, query, body });
       }
+      // Exact name: the signature studio's column (panel-only, never public).
+      if (signaturesSupported && err instanceof DirectusError && String(err.message).includes('signature_config')) {
+        signaturesSupported = false;
+        fieldsForCards = fieldsForCards.filter((f) => f !== 'signature_config');
+        log.warn?.('[api] vcards.signature_config is missing — re-run npm run directus:bootstrap; signature designs are not saved');
+        if (query?.fields) query.fields = query.fields.filter((f) => f !== 'signature_config');
+        if (body && typeof body === 'object' && 'signature_config' in body) throw new ApiError(501, 'NOT_SUPPORTED', 're-run npm run directus:bootstrap to save signature designs');
+        return cardsRequest(path, { method, query, body });
+      }
       // Before the logo check: "institution" never contains "logo", but it
       // must be caught here, not mistaken for some other missing column.
       if (institutionsSupported && err instanceof DirectusError && /\binstitution\b/.test(String(err.message))) {
@@ -445,21 +471,37 @@ export function createApiHandler(config) {
 
   // ---- Directus access helpers ----
 
-  async function fetchUser(id) {
-    const fields = epochSupported ? [...USER_FIELDS, EPOCH_FIELD] : USER_FIELDS;
+  /**
+   * Account rows with the optional app fields. Installs bootstrapped before a
+   * field existed keep working without it rather than locking everyone out:
+   * this query runs on every signed-in request.
+   */
+  async function queryUsers(query) {
+    const fields = [...USER_FIELDS, ...(epochSupported ? [EPOCH_FIELD] : []), ...(institutionAccessSupported ? [INSTITUTION_ACCESS_FIELD] : [])];
     try {
-      const rows = await directus.request('/users', { query: { fields, filter: { id: { _eq: id } }, limit: 1 } });
-      return rows?.[0] ?? null;
+      return await directus.request('/users', { query: { ...query, fields } });
     } catch (err) {
-      // Installs bootstrapped before the epoch field existed: keep working
-      // without "sign out everywhere" rather than locking everyone out.
       if (epochSupported && err instanceof DirectusError && String(err.message).includes(EPOCH_FIELD)) {
         epochSupported = false;
         log.warn?.(`[api] directus_users.${EPOCH_FIELD} is missing — re-run npm run directus:bootstrap; password changes will not revoke other sessions`);
-        return fetchUser(id);
+        return queryUsers(query);
+      }
+      if (institutionAccessSupported && err instanceof DirectusError && String(err.message).includes(INSTITUTION_ACCESS_FIELD)) {
+        noteInstitutionAccessUnsupported(err);
+        return queryUsers(query);
       }
       throw err;
     }
+  }
+
+  function noteInstitutionAccessUnsupported(err) {
+    institutionAccessSupported = false;
+    log.warn?.(`[api] directus_users.${INSTITUTION_ACCESS_FIELD} is missing — re-run npm run directus:bootstrap; every account sees every institution (${err?.message ?? err})`);
+  }
+
+  async function fetchUser(id) {
+    const rows = await queryUsers({ filter: { id: { _eq: id } }, limit: 1 });
+    return rows?.[0] ?? null;
   }
 
   async function loadUser(id, { fresh = false } = {}) {
@@ -555,12 +597,21 @@ export function createApiHandler(config) {
     return rows?.[0] ?? null;
   }
 
+  /** The institution ids an actor may see and link; null = all (admins, unrestricted accounts). */
+  function allowedInstitutions(actor) {
+    if (canManageUsers(actor.kind) || !institutionAccessSupported) return null;
+    return institutionAccess(actor.user);
+  }
+
   /**
    * Links (or unlinks) the institution named in validated card input. The
    * institution's name is copied into `organization`, so search, the vCard
    * and the "a card needs a name" rule keep working on the stored row.
+   * A restricted account may link only its institutions — but keeps the one
+   * the card already has (linked by an admin, or a shared card's owner), so
+   * editing other fields never fails or silently unlinks it.
    */
-  async function applyInstitutionInput(data) {
+  async function applyInstitutionInput(data, actor, current = null) {
     if (!('institution' in data)) return;
     if (!institutionsSupported) {
       delete data.institution;
@@ -569,6 +620,8 @@ export function createApiHandler(config) {
     if (data.institution === null) return;
     const inst = await findInstitution(data.institution);
     if (!inst) fail({ institution: 'invalid' });
+    const allowed = allowedInstitutions(actor);
+    if (allowed && !allowed.includes(inst.id) && inst.id !== current) fail({ institution: 'invalid' });
     data.organization = inst.name;
   }
 
@@ -829,7 +882,7 @@ export function createApiHandler(config) {
       if (problem) errors.code = problem;
     }
     if (Object.keys(errors).length) fail(errors);
-    await applyInstitutionInput(data);
+    await applyInstitutionInput(data, actor);
 
     const ownerId = (await resolveOwner(body, actor)) ?? actor.id;
     if (!canSeeAllCards(actor.kind) && (await countCards(actor.id)) >= maxCardsPerUser) {
@@ -866,7 +919,7 @@ export function createApiHandler(config) {
     const body = await readJson(req);
     const { data, errors } = validateCardInput(body, { partial: true });
     if (Object.keys(errors).length) fail(errors);
-    await applyInstitutionInput(data);
+    await applyInstitutionInput(data, actor, card.institution ?? null);
     const ownerId = await resolveOwner(body, actor);
     if (ownerId) {
       // Reassigning a card is ownership-level, like deleting: a collaborator
@@ -875,7 +928,7 @@ export function createApiHandler(config) {
       data.owner = ownerId;
     }
     const updated = Object.keys(data).length
-      ? await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: data, query: { fields: fieldsForCards } })
+      ? await cardsRequest(`/items/vcards/${card.id}`, { method: 'PATCH', body: data, query: { fields: fieldsForCards } })
       : card;
     // Claiming or re-pointing the /<username> URL at this card.
     if (updated.is_primary && !card.is_primary) await setPrimaryCard(updated.owner, updated.id);
@@ -912,10 +965,13 @@ export function createApiHandler(config) {
    * Streams a Directus file resized for its use. Directus passes SVG through
    * untransformed (no rasterising), so an SVG arrives as-is: it is served with
    * the sandboxing CSP — and refused (404) where a JPEG was asked for, since
-   * the vCard and email consumers of `?format=jpg` cannot render vectors.
+   * the vCard and email consumers of `?format=jpg|png` cannot render vectors.
    */
   async function streamImage(res, fileId, { kind, format, cache }) {
     const jpg = format === 'jpg';
+    // PNG keeps a logo's transparency for email signatures (Outlook cannot show WebP).
+    const png = format === 'png';
+    const bitmap = jpg || png;
     const wide = kind === 'wide';
     const upstream = await directus.request(`/assets/${fileId}`, {
       raw: true,
@@ -924,13 +980,13 @@ export function createApiHandler(config) {
         height: wide ? 1600 : 512,
         fit: kind === 'photo' ? 'cover' : 'inside',
         quality: 82,
-        format: jpg ? 'jpg' : 'webp',
+        format: jpg ? 'jpg' : png ? 'png' : 'webp',
         ...(jpg ? { transforms: JSON.stringify([['flatten', { background: '#ffffff' }]]) } : {}),
       },
     });
     const type = (upstream.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase();
     const svg = type === 'image/svg+xml';
-    if (svg && jpg) {
+    if (svg && bitmap) {
       await upstream.arrayBuffer().catch(() => {});
       throw new ApiError(404, 'NOT_FOUND', 'no raster rendition of this vector logo');
     }
@@ -1228,7 +1284,7 @@ function dayString(msOrDate) {
     if (!card) throw new ApiError(404, 'NOT_FOUND');
     const inst = await institutionOf(card);
     const format = url.searchParams.get('format');
-    const fileId = inst?.logo ? (format === 'jpg' && inst.logo_raster ? inst.logo_raster : inst.logo) : card.logo;
+    const fileId = inst?.logo ? ((format === 'jpg' || format === 'png') && inst.logo_raster ? inst.logo_raster : inst.logo) : card.logo;
     if (!fileId) throw new ApiError(404, 'NOT_FOUND');
     await streamImage(res, fileId, { kind: 'logo', format, cache: 'public, max-age=300' });
   }
@@ -1261,7 +1317,8 @@ function dayString(msOrDate) {
       sendJson(res, 200, { data: [] });
       return;
     }
-    const rows = (await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, { query: { fields: INSTITUTION_FIELDS, sort: ['name'], limit: -1 } })) ?? [];
+    const allowed = allowedInstitutions(actor);
+    const rows = (await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, { query: { fields: INSTITUTION_FIELDS, sort: ['name'], limit: -1 } }) ?? []).filter((r) => !allowed || allowed.includes(r.id));
     const counts = canManageUsers(actor.kind) ? await institutionCardCounts(rows.map((r) => r.id)) : null;
     sendJson(res, 200, { data: rows.map((r) => institutionDto(r, counts ? (counts.get(r.id) ?? 0) : undefined)) });
   }
@@ -1307,6 +1364,7 @@ function dayString(msOrDate) {
       await cardsRequest('/items/vcards', { method: 'PATCH', body: { query: { filter: { institution: { _eq: inst.id } }, limit: -1 }, data: { institution: null, organization: inst.name } } });
     }
     await institutionsRequest(`/items/${INSTITUTION_COLLECTION}/${inst.id}`, { method: 'DELETE' });
+    await dropInstitutionFromAccess(inst.id);
     await deleteFileQuietly(inst.logo);
     await deleteFileQuietly(inst.logo_raster);
     audit({ req, actor, action: 'institution.delete', target: inst.name, detail: `cards detached: ${count}` });
@@ -1316,7 +1374,7 @@ function dayString(msOrDate) {
   async function getInstitutionLogo({ res, url, params }) {
     const inst = await managedInstitution(params.id);
     const format = url.searchParams.get('format');
-    const fileId = format === 'jpg' && inst.logo_raster ? inst.logo_raster : inst.logo;
+    const fileId = (format === 'jpg' || format === 'png') && inst.logo_raster ? inst.logo_raster : inst.logo;
     if (!fileId) throw new ApiError(404, 'NOT_FOUND');
     await streamImage(res, fileId, { kind: 'logo', format, cache: 'private, max-age=300' });
   }
@@ -1354,11 +1412,51 @@ function dayString(msOrDate) {
     sendJson(res, 200, { data: institutionDto(updated) });
   }
 
+  /** Removes a deleted institution from the accounts restricted to it (best effort). */
+  async function dropInstitutionFromAccess(id) {
+    if (!institutionAccessSupported) return;
+    try {
+      for (const u of (await queryUsers({ limit: -1 })) ?? []) {
+        const ids = institutionAccess(u);
+        if (!ids?.includes(id)) continue;
+        await directus.request(`/users/${u.id}`, { method: 'PATCH', body: { [INSTITUTION_ACCESS_FIELD]: ids.filter((x) => x !== id) } });
+        userCache.delete(u.id);
+      }
+    } catch (err) {
+      log.warn?.(`[api] could not drop institution ${id} from account access lists: ${err?.message ?? err}`);
+    }
+  }
+
+  /**
+   * Validated `institutions` input → the stored column. Every id must exist;
+   * an install without the column refuses (501) rather than drop a restriction.
+   */
+  async function applyInstitutionAccessInput(data) {
+    if (!('institutions' in data)) return;
+    const ids = data.institutions;
+    delete data.institutions;
+    if (!institutionAccessSupported || !institutionsSupported) throw new ApiError(501, 'NOT_SUPPORTED', 're-run npm run directus:bootstrap to restrict institutions per account');
+    if (ids?.length) {
+      const found = (await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, { query: { fields: ['id'], filter: { id: { _in: ids } }, limit: -1 } })) ?? [];
+      if (found.length !== ids.length) fail({ institutions: 'invalid' });
+    }
+    data[INSTITUTION_ACCESS_FIELD] = ids;
+  }
+
+  /** A Directus write that names the access column on an install without it. */
+  function accessColumnMissing(err, data) {
+    if (!(INSTITUTION_ACCESS_FIELD in data) || !(err instanceof DirectusError) || !String(err.message).includes(INSTITUTION_ACCESS_FIELD)) return null;
+    noteInstitutionAccessUnsupported(err);
+    return new ApiError(501, 'NOT_SUPPORTED', 're-run npm run directus:bootstrap to restrict institutions per account');
+  }
+
+  const describeAccess = (ids) => (ids === null ? 'all' : `${ids.length} selected`);
+
   async function listUsers({ res, url }) {
     const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
     const service = await getServiceIdentity();
     const [rows, counts] = await Promise.all([
-      directus.request('/users', { query: { fields: USER_FIELDS, sort: ['email'], limit: -1, ...(q ? { search: q } : {}) } }),
+      queryUsers({ sort: ['email'], limit: -1, ...(q ? { search: q } : {}) }),
       directus.request('/items/vcards', { query: { aggregate: { count: '*' }, groupBy: ['owner'], limit: -1 } }),
     ]);
     const countBy = new Map((counts ?? []).map((c) => [c.owner, Number(c.count ?? 0)]));
@@ -1708,14 +1806,16 @@ function dayString(msOrDate) {
       }
     }
     await assertUsernameAvailable(data.username);
+    await applyInstitutionAccessInput(data);
 
     let created;
     try {
       created = await directus.request('/users', { method: 'POST', body: { ...data, status: data.status ?? 'active' }, query: { fields: ['id'] } });
     } catch (err) {
-      throw mapUniqueUserField(err, data);
+      throw accessColumnMissing(err, data) ?? mapUniqueUserField(err, data);
     }
-    audit({ req, actor, action: 'user.create', target: data.email, detail: `role: ${role.name}, status: ${data.status ?? 'active'}` });
+    const access = INSTITUTION_ACCESS_FIELD in data ? `, institutions: ${describeAccess(data[INSTITUTION_ACCESS_FIELD])}` : '';
+    audit({ req, actor, action: 'user.create', target: data.email, detail: `role: ${role.name}, status: ${data.status ?? 'active'}${access}` });
     sendJson(res, 201, { data: userDto(await loadUser(created.id, { fresh: true }), 0) });
   }
 
@@ -1768,6 +1868,7 @@ function dayString(msOrDate) {
     if (data.username && data.username !== target.username) {
       await assertUsernameAvailable(data.username, { exceptUserId: target.id });
     }
+    await applyInstitutionAccessInput(data);
 
     // Changed fields, old → new, for the audit trail. Passwords are never recorded.
     const changed = [];
@@ -1778,11 +1879,14 @@ function dayString(msOrDate) {
     if (data.password) changed.push('password: (set)');
     if (data.first_name !== undefined && data.first_name !== target.first_name) changed.push(`first_name: ${target.first_name ?? '—'} → ${data.first_name}`);
     if (data.last_name !== undefined && data.last_name !== target.last_name) changed.push(`last_name: ${target.last_name ?? '—'} → ${data.last_name}`);
+    if (INSTITUTION_ACCESS_FIELD in data && JSON.stringify(data[INSTITUTION_ACCESS_FIELD]) !== JSON.stringify(institutionAccess(target))) {
+      changed.push(`institutions: ${describeAccess(institutionAccess(target))} → ${describeAccess(data[INSTITUTION_ACCESS_FIELD])}`);
+    }
 
     try {
       await directus.request(`/users/${target.id}`, { method: 'PATCH', body: data });
     } catch (err) {
-      throw mapUniqueUserField(err, data);
+      throw accessColumnMissing(err, data) ?? mapUniqueUserField(err, data);
     }
     if (changed.length) audit({ req, actor, action: 'user.update', target: target.email, detail: changed.join('; ') });
     userCache.delete(target.id);

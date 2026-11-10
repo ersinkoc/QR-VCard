@@ -213,6 +213,18 @@ async function main() {
     console.log('[bootstrap] field directus_users.qrv_session_epoch created');
   }
 
+  // Which institutions a non-admin account may see and link: null = all of
+  // them (the default, so upgrades change nothing), an array of ids = only those.
+  const hasInstitutionAccess = await api('/fields/directus_users/qrv_institution_access', { token: adminToken }).then(() => true, () => false);
+  if (!hasInstitutionAccess) {
+    await api('/fields/directus_users', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'qrv_institution_access', type: 'json', meta: { hidden: true, interface: 'input-code', note: 'QR-VCard: institution ids this account may use; null = all (managed by the app server)' }, schema: {} },
+    });
+    console.log('[bootstrap] field directus_users.qrv_institution_access created');
+  }
+
   // ---- policies ------------------------------------------------------------
   // The vCard policies grant NOTHING and no Studio access: people sign in to the
   // QR-VCard app, whose server authorises each request and talks to Directus with
@@ -375,6 +387,16 @@ async function main() {
       body: { field: 'design_config', type: 'json', meta: { interface: 'input-code', options: { language: 'json' }, note: 'Page designer document (managed by the QR-VCard server; empty = classic design)' } },
     });
     console.log('[bootstrap] field vcards.design_config created');
+  }
+  // Email-signature studio: template + options (panel-only, never public).
+  const hasSignatureConfig = await api('/fields/vcards/signature_config', { token: adminToken }).then(() => true, () => false);
+  if (!hasSignatureConfig) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: { field: 'signature_config', type: 'json', meta: { interface: 'input-code', options: { language: 'json' }, note: 'Email-signature design (managed by the QR-VCard server; empty = default signature)' } },
+    });
+    console.log('[bootstrap] field vcards.signature_config created');
   }
   const hasBackground = await api('/fields/vcards/background', { token: adminToken }).then(() => true, () => false);
   if (!hasBackground) {

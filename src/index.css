@@ -138,6 +138,32 @@
     padding-top: max(2.5rem, env(safe-area-inset-top));
     padding-bottom: max(2.5rem, env(safe-area-inset-bottom));
   }
+  /* Card form: each group of fields is its own quiet panel with a small
+     uppercase caption sitting on the border. */
+  .form-section {
+    @apply rounded-xl border border-line px-4 pt-3 pb-4;
+    background: color-mix(in oklab, var(--color-bg) 45%, var(--color-surface));
+  }
+  .form-section > legend {
+    @apply px-1.5 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase;
+  }
+  /* Save / Cancel stay reachable at the bottom of a long form. */
+  .form-actions {
+    @apply sticky bottom-0 z-10 -mx-5 -mb-5 mt-6 flex flex-wrap items-center gap-2 rounded-b-xl border-t border-line px-5 py-3 sm:-mx-6 sm:-mb-6 sm:px-6;
+    background: color-mix(in oklab, var(--color-surface) 92%, transparent);
+    backdrop-filter: blur(8px);
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .menu-pop {
+    animation: menu-in 120ms ease-out both;
+    transform-origin: top right;
+  }
+  @keyframes menu-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
   /* Entrance motion for page-level containers. `both` + the delay variant
      holds the later element invisible until its turn. */
   @keyframes rise {

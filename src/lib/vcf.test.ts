@@ -100,7 +100,9 @@ describe('contactFromCard', () => {
         note: null,
       }),
     );
-    expect(vcf).toContain('N:Lovelace;Ada;;;');
+    // The card's name rule reaches the address book too: given name capitalised, family name in capitals.
+    expect(vcf).toContain('N:LOVELACE;Ada;;;');
+    expect(vcf).toContain('FN:Ada LOVELACE');
     expect(vcf).toContain('ORG:Analytical Engines');
     expect(vcf).toContain('TITLE:Mathematician');
     expect(vcf).toContain('TEL;TYPE=CELL:+44 20');

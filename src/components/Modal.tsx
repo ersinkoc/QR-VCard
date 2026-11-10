@@ -12,12 +12,15 @@ export default function Modal({
   children,
   footer,
   wide = false,
+  xl = false,
 }: {
   title: ReactNode;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  /** Studio-sized: most of a desktop screen. */
+  xl?: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -52,7 +55,7 @@ export default function Modal({
         aria-labelledby={titleId}
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
-        className={`card rise flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-b-none bg-surface sm:rounded-b-xl ${wide ? 'sm:max-w-2xl' : 'sm:max-w-md'}`}
+        className={`card rise flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-b-none bg-surface sm:rounded-b-xl ${xl ? 'sm:max-w-6xl' : wide ? 'sm:max-w-2xl' : 'sm:max-w-md'}`}
       >
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
           <h2 id={titleId} className="min-w-0 truncate text-base font-semibold tracking-tight">

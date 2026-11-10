@@ -4,6 +4,8 @@
  */
 import { randomInt } from 'node:crypto';
 import { validateDesignConfig } from './design-config.mjs';
+import { formatFamilyName, formatGivenName } from './person-name.mjs';
+import { validateSignatureConfig } from './signature-config.mjs';
 
 export const CARD_LIMITS = {
   first_name: 80,
@@ -93,6 +95,7 @@ export function normalizeSocial(field, value) {
 }
 const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9-]{1,30}[A-Za-z0-9]$/;
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_USER_INSTITUTIONS = 500;
 
 /**
  * A username IS a public short URL (`/<username>`), so it is stricter than a
@@ -231,6 +234,9 @@ export function validateCardInput(input, { partial = false } = {}) {
     if (website) data.website = website;
     else errors.website = 'invalid_url';
   }
+  // One spelling everywhere: "Ayşe Gül YILMAZ".
+  if (data.first_name) data.first_name = formatGivenName(data.first_name);
+  if (data.last_name) data.last_name = formatFamilyName(data.last_name);
 
   // Social profiles: accept a full URL or a bare handle, store the canonical
   // https URL so both the buttons and the vCard can use the value as-is.
@@ -278,6 +284,13 @@ export function validateCardInput(input, { partial = false } = {}) {
     const { value, error } = validateDesignConfig(src.design_config);
     if (error) errors.design_config = error;
     else data.design_config = value;
+  }
+
+  // The email-signature studio's document (null = never designed).
+  if ('signature_config' in src) {
+    const { value, error } = validateSignatureConfig(src.signature_config);
+    if (error) errors.signature_config = error;
+    else data.signature_config = value;
   }
 
   // The linked institution (qrv_institutions id); null/'' unlinks. Existence
@@ -339,7 +352,7 @@ export function validateUserInput(input, { partial = false } = {}) {
     if (!(field in src)) continue;
     const value = cleanString(src[field]);
     if (value !== null && value.length > 80) errors[field] = 'too_long';
-    else data[field] = value;
+    else data[field] = value === null ? null : field === 'first_name' ? formatGivenName(value) : formatFamilyName(value);
   }
   if ('password' in src || !partial) {
     const problem = validatePassword(src.password);
@@ -364,6 +377,14 @@ export function validateUserInput(input, { partial = false } = {}) {
       if (error) errors.username = error;
       else data.username = value;
     }
+  }
+  // Institution access: null = every institution, an array = only those ids
+  // (an empty array = none). Whether the ids exist is the API's check.
+  if ('institutions' in src) {
+    const ids = src.institutions;
+    if (ids === null) data.institutions = null;
+    else if (Array.isArray(ids) && ids.length <= MAX_USER_INSTITUTIONS && ids.every((id) => typeof id === 'string' && UUID_RE.test(id))) data.institutions = [...new Set(ids.map((id) => id.toLowerCase()))];
+    else errors.institutions = 'invalid';
   }
   return { data, errors };
 }

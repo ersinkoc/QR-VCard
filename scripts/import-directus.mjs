@@ -40,11 +40,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 
 /** User fields the API accepts back. Everything else is dropped on import. */
-const USER_WRITE_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', 'username', 'qrv_session_epoch', 'last_access', 'last_page', 'theme', 'language', 'title', 'description', 'location', 'tags', 'appearance', 'avatar'];
+const USER_WRITE_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', 'username', 'qrv_session_epoch', 'qrv_institution_access', 'last_access', 'last_page', 'theme', 'language', 'title', 'description', 'location', 'tags', 'appearance', 'avatar'];
 
 /** Fields that may legally reject a write; retried without them one by one. */
-const USER_DROPPABLE = ['qrv_session_epoch', 'username', 'avatar', 'last_access', 'last_page', 'id'];
-const CARD_DROPPABLE = ['user_created', 'date_created', 'photo', 'logo', 'background', 'design_config', 'institution', 'id'];
+const USER_DROPPABLE = ['qrv_session_epoch', 'qrv_institution_access', 'username', 'avatar', 'last_access', 'last_page', 'id'];
+const CARD_DROPPABLE = ['user_created', 'date_created', 'photo', 'logo', 'background', 'design_config', 'signature_config', 'institution', 'id'];
 const INSTITUTION_DROPPABLE = ['date_created', 'logo', 'logo_raster', 'id'];
 const ROW_DROPPABLE = ['id'];
 

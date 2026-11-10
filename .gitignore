@@ -39,3 +39,4 @@ directus/.bootstrap-state.json
 .dfmt/
 # Baked by Docker/nixpacks builds (commit id for /healthz)
 .commit-sha
+.vscode/settings.json

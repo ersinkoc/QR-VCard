@@ -23,7 +23,8 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
+        // 'prompt': a deploy must not reload open tabs and lose unsaved edits (UpdatePrompt asks).
+        registerType: 'prompt',
         includeAssets: ['favicon.svg', 'pwa-192.png', 'pwa-512.png', 'maskable-512.png'],
         manifest: {
           name: 'QR-VCard',

@@ -1,3 +1,4 @@
+import { formatFamilyName, formatGivenName } from '../../server/person-name.mjs';
 /** Minimal contact shape for building a vCard file. */
 export interface VCardContact {
   firstName?: string | null;
@@ -42,8 +43,8 @@ export interface CardFields {
  */
 export function contactFromCard(card: CardFields): VCardContact {
   return {
-    firstName: card.first_name,
-    lastName: card.last_name,
+    firstName: formatGivenName(card.first_name),
+    lastName: formatFamilyName(card.last_name),
     organization: card.organization,
     jobTitle: card.job_title,
     phone: card.phone,

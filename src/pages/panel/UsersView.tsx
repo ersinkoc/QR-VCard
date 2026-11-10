@@ -7,8 +7,8 @@ import Field from '../../components/Field';
 import Modal from '../../components/Modal';
 import { errorText, fieldErrorTexts, useI18n } from '../../i18n';
 import type { Translate } from '../../i18n';
-import type { AdminUser, Role } from '../../lib/api';
-import { createUser, deleteUser, displayName, listRoles, listUsers, updateUser } from '../../lib/api';
+import type { AdminUser, Institution, Role } from '../../lib/api';
+import { createUser, deleteUser, displayName, listInstitutions, listRoles, listUsers, updateUser } from '../../lib/api';
 import { generatePassword } from '../../lib/password';
 import { useSession } from './session';
 
@@ -64,15 +64,65 @@ function PasswordField({ id, label, value, onChange, error, hint }: { id: string
   );
 }
 
+/** The ids an account is limited to, among the institutions that still exist; null = all. */
+function knownAccess(user: AdminUser | null, institutions: Institution[]): string[] | null {
+  if (!user?.institutions) return null;
+  return user.institutions.filter((id) => institutions.some((i) => i.id === id));
+}
+
+/** Which institutions a non-admin account sees in its card form: all, or only the ticked ones. */
+function InstitutionAccessField({ uid, institutions, value, onChange, isAdminRole, error }: { uid: string; institutions: Institution[]; value: string[] | null; onChange: (v: string[] | null) => void; isAdminRole: boolean; error?: string }) {
+  const { t } = useI18n();
+  return (
+    <fieldset className="space-y-2">
+      <legend className="label">{t('users.institutions')}</legend>
+      {isAdminRole ? (
+        <p className="text-xs text-muted">{t('users.institutionsAdmin')}</p>
+      ) : institutions.length === 0 ? (
+        <p className="text-xs text-muted">{t('users.institutionsNone')}</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="radio" name={`${uid}-inst-mode`} className="h-4 w-4 accent-[var(--color-accent)]" checked={value === null} onChange={() => onChange(null)} />
+              {t('users.institutionsAll')}
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" name={`${uid}-inst-mode`} className="h-4 w-4 accent-[var(--color-accent)]" checked={value !== null} onChange={() => onChange(value ?? [])} />
+              {t('users.institutionsSome')}
+            </label>
+          </div>
+          {value !== null && (
+            <div role="group" aria-label={t('users.institutionsSome')} className="max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-line p-1.5">
+              {institutions.map((i) => (
+                <label key={i.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-fg/5">
+                  <input type="checkbox" className="h-4 w-4 accent-[var(--color-accent)]" checked={value.includes(i.id)} onChange={(e) => onChange(e.target.checked ? [...value, i.id] : value.filter((x) => x !== i.id))} />
+                  <span className="truncate">{i.name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <p className={`text-xs ${value !== null && value.length === 0 ? 'text-danger' : 'text-muted'}`}>
+            {value === null ? t('users.institutionsAllHint') : value.length === 0 ? t('users.institutionsNoneSelected') : t('users.institutionsSomeHint', { count: value.length })}
+          </p>
+        </>
+      )}
+      {error && <p className="text-xs text-danger">{error}</p>}
+    </fieldset>
+  );
+}
+
 function UserFormModal({
   user,
   roles,
+  institutions,
   isSelf,
   onClose,
   onSaved,
 }: {
   user: AdminUser | null;
   roles: Role[];
+  institutions: Institution[];
   isSelf: boolean;
   onClose: () => void;
   onSaved: (user: AdminUser) => void;
@@ -87,10 +137,14 @@ function UserFormModal({
   const [roleId, setRoleId] = useState(() => roles.find((r) => r.name === user?.role_name)?.id ?? defaultRole);
   const [status, setStatus] = useState<'active' | 'suspended'>(user?.status === 'suspended' ? 'suspended' : 'active');
   const [password, setPassword] = useState('');
+  const initialAccess = useMemo(() => knownAccess(user, institutions), [user, institutions]);
+  const [access, setAccess] = useState<string[] | null>(initialAccess);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const fieldErrors = fieldErrorTexts(t, error);
   const selectedRole = roles.find((r) => r.id === roleId);
+  // Sent only when changed: an install without the access column keeps saving everything else.
+  const accessChanged = JSON.stringify(access === null ? null : [...access].sort()) !== JSON.stringify(initialAccess === null ? null : [...initialAccess].sort());
 
   async function onSubmit(ev: FormEvent) {
     ev.preventDefault();
@@ -105,6 +159,7 @@ function UserFormModal({
             last_name: lastName.trim(),
             username: savedUsername || null,
             ...(isSelf ? {} : { role: roleId, status }),
+            ...(accessChanged ? { institutions: access } : {}),
           })
         : await createUser({
             email: email.trim(),
@@ -113,6 +168,7 @@ function UserFormModal({
             role: roleId,
             password,
             ...(savedUsername ? { username: savedUsername } : {}),
+            ...(accessChanged ? { institutions: access } : {}),
           });
       onSaved(saved);
     } catch (e) {
@@ -183,6 +239,7 @@ function UserFormModal({
             </select>
           </Field>
         )}
+        <InstitutionAccessField uid={uid} institutions={institutions} value={access} onChange={setAccess} isAdminRole={selectedRole?.kind === 'admin'} error={fieldErrors.institutions} />
         {!user && <PasswordField id={`${uid}-password`} label={t('users.initialPassword')} value={password} onChange={setPassword} error={fieldErrors.password} hint={t('users.passwordHint')} />}
         {error !== null && (
           <p role="alert" className="text-sm text-danger">
@@ -295,6 +352,7 @@ export default function UsersView() {
   const { t, formatDate } = useI18n();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [actionError, setActionError] = useState<unknown>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -309,9 +367,11 @@ export default function UsersView() {
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const [u, r] = await Promise.all([listUsers(), listRoles()]);
+      // Institutions are optional schema: without them the access field just says there are none.
+      const [u, r, inst] = await Promise.all([listUsers(), listRoles(), listInstitutions().catch(() => [] as Institution[])]);
       setUsers(u);
       setRoles(r);
+      setInstitutions(inst);
     } catch (e) {
       setLoadError(e);
     }
@@ -435,6 +495,11 @@ export default function UsersView() {
                         {self && <span className="text-xs font-normal text-muted">({t('common.you')})</span>}
                         <span className={`badge ${u.role === 'admin' ? 'badge-accent' : ''}`}>{roleLabel(t, { name: u.role_name ?? '', kind: u.role })}</span>
                         {u.status !== 'active' && <span className="badge badge-danger">{statusLabel(t, u.status)}</span>}
+                        {u.role !== 'admin' && institutions.length > 0 && knownAccess(u, institutions) !== null && (
+                          <span className="badge" title={institutions.filter((i) => u.institutions?.includes(i.id)).map((i) => i.name).join(', ') || undefined}>
+                            {t('users.institutionsCount', { count: knownAccess(u, institutions)!.length })}
+                          </span>
+                        )}
                       </p>
                       <p className="truncate text-sm text-muted">
                         {name ? `${u.email} · ` : ''}
@@ -474,6 +539,7 @@ export default function UsersView() {
         <UserFormModal
           user={modal.kind === 'edit' ? modal.user : null}
           roles={roles}
+          institutions={institutions}
           isSelf={modal.kind === 'edit' && modal.user.id === me.id}
           onClose={() => setModal(null)}
           onSaved={(user) => {

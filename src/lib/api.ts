@@ -4,8 +4,10 @@
  * cookie the server sets, so no credential is ever readable by scripts.
  */
 
+import { formatFamilyName, formatGivenName } from '../../server/person-name.mjs';
 import type { CardDesign } from './card-designs';
 import type { PageDesign } from './page-design';
+import type { SignatureDesign } from '../../server/signature-config.mjs';
 
 export type RoleKind = 'admin' | 'editor' | 'user';
 export type { CardDesign } from './card-designs';
@@ -69,6 +71,8 @@ export interface Card extends CardContent {
   background: string | null;
   /** The linked institution: its name and logo show on the card. */
   institution: Institution | null;
+  /** The email-signature studio document; null = never designed. */
+  signature_config?: SignatureDesign | null;
   /** Public page views counted by the server (panel previews excluded). */
   qrv_views: number;
   /** Answers the owner's /<username> short URL (one per owner). */
@@ -116,6 +120,8 @@ export interface AdminUser extends Me {
   status: string;
   last_access: string | null;
   card_count: number;
+  /** Institutions this account may see and link: null = all (admins always see all). */
+  institutions: string[] | null;
 }
 
 export interface Role {
@@ -124,7 +130,7 @@ export interface Role {
   kind: RoleKind;
 }
 
-export type CardInput = Partial<CardContent> & { status?: Card['status']; code?: string; is_primary?: boolean; owner_id?: string; institution?: string | null };
+export type CardInput = Partial<CardContent> & { status?: Card['status']; code?: string; is_primary?: boolean; owner_id?: string; institution?: string | null; signature_config?: SignatureDesign | null };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -283,7 +289,7 @@ export function publicPhotoUrl(card: Pick<PublicCard, 'code' | 'photo'>, format?
   return `/api/public/cards/${encodeURIComponent(card.code)}/photo?v=${card.photo}${format ? `&format=${format}` : ''}`;
 }
 
-export function publicLogoUrl(card: Pick<PublicCard, 'code' | 'logo'>, format?: 'jpg'): string | null {
+export function publicLogoUrl(card: Pick<PublicCard, 'code' | 'logo'>, format?: 'jpg' | 'png'): string | null {
   if (!card.logo) return null;
   return `/api/public/cards/${encodeURIComponent(card.code)}/logo?v=${card.logo}${format ? `&format=${format}` : ''}`;
 }
@@ -305,7 +311,7 @@ export const uploadInstitutionLogo = (id: string, image: Blob) => request<Instit
 export const uploadInstitutionLogoRaster = (id: string, image: Blob) => request<Institution>('POST', `/api/institutions/${id}/logo/raster`, image);
 export const deleteInstitutionLogo = (id: string) => request<Institution>('DELETE', `/api/institutions/${id}/logo`);
 
-export function institutionLogoUrl(inst: Pick<Institution, 'id' | 'logo'>, format?: 'jpg'): string | null {
+export function institutionLogoUrl(inst: Pick<Institution, 'id' | 'logo'>, format?: 'jpg' | 'png'): string | null {
   return inst.logo ? `/api/institutions/${inst.id}/logo?v=${inst.logo}${format ? `&format=${format}` : ''}` : null;
 }
 
@@ -314,12 +320,12 @@ export function institutionLogoUrl(inst: Pick<Institution, 'id' | 'logo'>, forma
 export const listUsers = () => request<AdminUser[]>('GET', '/api/users');
 export const listRoles = () => request<Role[]>('GET', '/api/roles');
 
-export const createUser = (input: { email: string; password: string; first_name: string; last_name: string; role: string; username?: string }) =>
+export const createUser = (input: { email: string; password: string; first_name: string; last_name: string; role: string; username?: string; institutions?: string[] | null }) =>
   request<AdminUser>('POST', '/api/users', input);
 
 export const updateUser = (
   id: string,
-  patch: Partial<{ email: string; first_name: string; last_name: string; username: string | null; role: string; status: 'active' | 'suspended'; password: string }>,
+  patch: Partial<{ email: string; first_name: string; last_name: string; username: string | null; role: string; status: 'active' | 'suspended'; password: string; institutions: string[] | null }>,
 ) => request<AdminUser>('PATCH', `/api/users/${id}`, patch);
 
 export const deleteUser = (id: string, cards: 'delete' | 'transfer') =>
@@ -378,8 +384,9 @@ export function userUrl(username: string): string {
   return `${window.location.origin}/${username}`;
 }
 
+/** "Ayşe Gül YILMAZ": given name capitalised, family name in capitals — also for rows saved before that rule. */
 export function displayName(c: { first_name: string | null; last_name: string | null }): string {
-  return [c.first_name, c.last_name].filter(Boolean).join(' ').trim();
+  return [formatGivenName(c.first_name?.trim()), formatFamilyName(c.last_name?.trim())].filter(Boolean).join(' ').trim();
 }
 
 export const isPrivileged = (me: Pick<Me, 'role'>) => me.role === 'admin' || me.role === 'editor';

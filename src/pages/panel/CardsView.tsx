@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Avatar from '../../components/Avatar';
-import CopyButton from '../../components/CopyButton';
+import Icon from '../../components/Icon';
+import type { IconName } from '../../components/Icon';
+import Menu from '../../components/Menu';
 import Modal from '../../components/Modal';
 import { errorText, useI18n } from '../../i18n';
 import type { Card, ViewTrend } from '../../lib/api';
 import { cardPhotoUrl, deleteCard, displayName, fetchViewTrend, isPrivileged, listCards, shortUrl, updateCard } from '../../lib/api';
+import { copyText } from '../../lib/clipboard';
 import CardForm from './CardForm';
 import QrModal from './QrModal';
 import ShareModal from './ShareModal';
@@ -13,11 +16,17 @@ import SignatureModal from './SignatureModal';
 import TrendChart from './TrendChart';
 import { useSession } from './session';
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value, icon, tone = 'muted' }: { label: string; value: number; icon: IconName; tone?: 'accent' | 'success' | 'muted' }) {
+  const toneClass = tone === 'accent' ? 'bg-accent/10 text-accent' : tone === 'success' ? 'bg-success/10 text-success' : 'bg-fg/6 text-muted';
   return (
-    <div className="card px-4 py-3">
-      <p className="text-xs text-muted">{label}</p>
-      <p className="mt-0.5 text-xl font-semibold tracking-tight tabular-nums">{value}</p>
+    <div className="card flex items-center gap-3 px-4 py-3.5">
+      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${toneClass}`}>
+        <Icon name={icon} size={20} />
+      </span>
+      <div className="min-w-0">
+        <p className="truncate text-xs font-medium text-muted">{label}</p>
+        <p className="text-xl leading-tight font-semibold tracking-tight tabular-nums">{value.toLocaleString()}</p>
+      </div>
     </div>
   );
 }
@@ -172,16 +181,17 @@ export default function CardsView() {
             setEditing('new');
           }}
         >
-          + {t('cards.new')}
+          <Icon name="plus" />
+          {t('cards.new')}
         </button>
       </div>
 
       {cards && cards.length > 0 && (
         <div className="rise rise-2 mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label={t('cards.statTotal')} value={scoped.length} />
-          <Stat label={t('cards.statPublished')} value={published} />
-          <Stat label={t('cards.statDraft')} value={scoped.length - published} />
-          <Stat label={t('cards.statViews')} value={scoped.reduce((sum, c) => sum + (c.qrv_views || 0), 0)} />
+          <Stat icon="cards" tone="accent" label={t('cards.statTotal')} value={scoped.length} />
+          <Stat icon="send" tone="success" label={t('cards.statPublished')} value={published} />
+          <Stat icon="draft" label={t('cards.statDraft')} value={scoped.length - published} />
+          <Stat icon="eye" tone="accent" label={t('cards.statViews')} value={scoped.reduce((sum, c) => sum + (c.qrv_views || 0), 0)} />
         </div>
       )}
 
@@ -218,10 +228,10 @@ export default function CardsView() {
       )}
 
       {cards && cards.length > 0 && (
-        <div className="mt-6 flex flex-wrap gap-2">
+        <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <input
             type="search"
-            className="input max-w-sm flex-1"
+            className="input sm:max-w-sm sm:flex-1"
             placeholder={t('cards.searchPlaceholder')}
             aria-label={t('common.search')}
             value={q}
@@ -229,7 +239,7 @@ export default function CardsView() {
           />
           {privileged && owners.length > 1 && (
             <select
-              className="input w-auto max-w-xs"
+              className="input sm:w-auto sm:max-w-xs"
               aria-label={t('cards.ownerFilter')}
               value={ownerFilter}
               onChange={(e) => setParams(e.target.value ? { owner: e.target.value } : {})}
@@ -269,64 +279,83 @@ export default function CardsView() {
               const url = shortUrl(card.code);
               const busy = busyId === card.id;
               return (
-                <li key={card.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-                  <div className="flex min-w-0 flex-1 items-center gap-3">
-                    <Avatar name={name} photoUrl={cardPhotoUrl(card)} accent={card.accent_color} logo={card.photo_style === 'logo'} size={44} />
+                <li key={card.id} className="flex flex-col gap-3 p-4 transition-colors hover:bg-fg/[0.02] md:flex-row md:items-center">
+                  <div className="flex min-w-0 flex-1 items-center gap-3.5">
+                    <Avatar name={name} photoUrl={cardPhotoUrl(card)} accent={card.accent_color} logo={card.photo_style === 'logo'} size={48} />
                     <div className="min-w-0">
-                      <p className="flex items-center gap-2 font-medium tracking-tight">
-                        <span className="truncate">{name}</span>
+                      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-semibold tracking-tight">
+                        <span className="break-words">{name}</span>
                         <span className={`badge ${card.status === 'published' ? 'badge-success' : ''}`}>{card.status === 'published' ? t('cards.published') : t('cards.draft')}</span>
-                      </p>                      <p className="truncate text-sm text-muted">{[card.job_title, displayName(card) ? card.organization : null].filter(Boolean).join(' · ') || ' '}</p>
-                      <p className="code truncate text-xs text-muted">
-                        {url.replace(/^https?:\/\//, '')}
-                        {card.is_primary && <span className="font-sans"> · {t('cards.primary')}</span>}
+                        {card.is_primary && (
+                          <span className="badge badge-accent" title={t('cards.primaryHint')}>
+                            <Icon name="star" size={11} className="mr-1" />
+                            {t('cards.primary')}
+                          </span>
+                        )}
+                      </p>
+                      {(card.job_title || (displayName(card) && card.organization)) && (
+                        <p className="text-sm text-muted">{[card.job_title, displayName(card) ? card.organization : null].filter(Boolean).join(' · ')}</p>
+                      )}
+                      <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+                        <span className="code text-xs">{url.replace(/^https?:\/\//, '')}</span>
+                        <span className="inline-flex items-center gap-1">
+                          <Icon name="eye" size={13} />
+                          {t('cards.views', { count: card.qrv_views || 0 })}
+                        </span>
                         {(card.collaborator_count ?? 0) > 0 && (
-                          <button type="button" className="font-sans underline decoration-dotted underline-offset-2" title={t('shares.titleHint')} onClick={() => setSharing(card)}>
-                             · {t('cards.sharedWith', { count: card.collaborator_count ?? 0 })}
+                          <button type="button" className="inline-flex items-center gap-1 underline decoration-dotted underline-offset-2" title={t('shares.titleHint')} onClick={() => setSharing(card)}>
+                            <Icon name="users" size={13} />
+                            {t('cards.sharedWith', { count: card.collaborator_count ?? 0 })}
                           </button>
                         )}
-                        <span className="font-sans"> · {t('cards.views', { count: card.qrv_views || 0 })}</span>
-                        {privileged && <span className="font-sans"> · {t('cards.owner', { name: ownerText(card) })}</span>}
+                        {privileged && (
+                          <span className="inline-flex items-center gap-1">
+                            <Icon name="user" size={13} />
+                            {t('cards.owner', { name: ownerText(card) })}
+                          </span>
+                        )}
                       </p>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2 sm:justify-end">
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setQrCard(card)}>
-                      {t('cards.qr')}
-                    </button>
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSharing(card)}>
-                      {t('cards.share')}
-                    </button>
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSignatureCard(card)}>
-                      {t('cards.signature')}
-                    </button>
-                    <CopyButton text={url} label={t('common.copyUrl')} className="btn btn-secondary btn-sm" />
-                    <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void togglePublish(card)}>
-                      {card.status === 'published' ? t('cards.unpublish') : t('cards.publish')}
-                    </button>
-                    {card.status === 'published' && (
-                      <a className="btn btn-ghost btn-sm" href={`/c/${encodeURIComponent(card.code)}`} target="_blank" rel="noreferrer">
-                        {t('cards.view')}
-                      </a>
-                    )}
-                    {!card.is_primary && (
-                      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} title={t('cards.primaryHint')} onClick={() => void togglePrimary(card)}>
-                        {t('cards.makePrimary')}
-                      </button>
-                    )}
+                  <div className="flex flex-wrap items-center gap-2 md:justify-end">
                     <button
                       type="button"
-                      className="btn btn-ghost btn-sm"
+                      className="btn btn-secondary btn-sm"
                       onClick={() => {
                         setNotice(null);
                         setEditing(card);
                       }}
                     >
+                      <Icon name="edit" size={16} />
                       {t('common.edit')}
                     </button>
-                    <button type="button" className="btn btn-ghost btn-sm text-danger" disabled={busy} onClick={() => setDeleting(card)}>
-                      {t('common.delete')}
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setQrCard(card)}>
+                      <Icon name="qr" size={16} />
+                      {t('cards.qr')}
                     </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSharing(card)}>
+                      <Icon name="share" size={16} />
+                      {t('cards.share')}
+                    </button>
+                    <button type="button" className={`btn btn-sm ${card.status === 'published' ? 'btn-ghost' : 'btn-primary'}`} disabled={busy} onClick={() => void togglePublish(card)}>
+                      {card.status === 'published' ? t('cards.unpublish') : t('cards.publish')}
+                    </button>
+                    <Menu
+                      label={t('cards.moreActions')}
+                      items={[
+                        { label: t('cards.signature'), icon: 'signature', onSelect: () => setSignatureCard(card) },
+                        {
+                          label: t('common.copyUrl'),
+                          icon: 'link',
+                          onSelect: () => {
+                            void copyText(url).then(() => setNotice(t('cards.urlCopied')));
+                          },
+                        },
+                        card.status === 'published' && { label: t('cards.view'), icon: 'external', onSelect: () => window.open(`/c/${encodeURIComponent(card.code)}`, '_blank', 'noopener') },
+                        !card.is_primary && { label: t('cards.makePrimary'), icon: 'star', hint: t('cards.primaryHint'), disabled: busy, onSelect: () => void togglePrimary(card) },
+                        { label: t('common.delete'), icon: 'trash', danger: true, disabled: busy, onSelect: () => setDeleting(card) },
+                      ]}
+                    />
                   </div>
                 </li>
               );
@@ -339,7 +368,7 @@ export default function CardsView() {
 
       {sharing && <ShareModal card={sharing} canManage={canShare(sharing)} onClose={() => setSharing(null)} onSaved={upsert} />}
 
-      {signatureCard && <SignatureModal card={signatureCard} onClose={() => setSignatureCard(null)} />}
+      {signatureCard && <SignatureModal card={signatureCard} onClose={() => setSignatureCard(null)} onSaved={(saved) => { upsert(saved); setSignatureCard(saved); }} />}
 
       {deleting && (
         <Modal
