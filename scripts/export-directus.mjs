@@ -14,7 +14,7 @@
  *
  *   exports/<timestamp>/
  *     manifest.json   provenance, record counts, SHA-256 of every artifact
- *     data.json       users, vcards, qrv_view_days, qrv_card_access,
+ *     data.json       users, qrv_institutions, vcards, qrv_view_days, qrv_card_access,
  *                     qrv_audit_log, plus file metadata
  *     files/<id>      one binary per directus_files row (card photos, avatars)
  *
@@ -50,6 +50,7 @@ export function loadEnv(env = process.env) {
 /** What is exported, in import order (files come first — see the files map). */
 const COLLECTIONS = [
   { key: 'users', path: '/users' },
+  { key: 'qrv_institutions', path: '/items/qrv_institutions' },
   { key: 'vcards', path: '/items/vcards' },
   { key: 'qrv_view_days', path: '/items/qrv_view_days' },
   { key: 'qrv_card_access', path: '/items/qrv_card_access' },

@@ -10,9 +10,9 @@
  *   npm run directus:import -- exports/<timestamp> --update
  *   npm run directus:import -- exports/<timestamp> --password=TempPass123
  *
- * Order: files → users → vcards → qrv_view_days → qrv_card_access →
- * qrv_audit_log. Rows are matched on their natural key (email, card code,
- * card+day, card+user), so re-running an import is safe. If the QR-VCard
+ * Order: files → users → qrv_institutions → vcards → qrv_view_days →
+ * qrv_card_access → qrv_audit_log. Rows are matched on their natural key
+ * (email, institution name, card code, card+day, card+user), so re-running an import is safe. If the QR-VCard
  * schema is missing, directus/bootstrap.mjs runs first — a completely empty
  * Directus is enough.
  *
@@ -44,7 +44,8 @@ const USER_WRITE_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', '
 
 /** Fields that may legally reject a write; retried without them one by one. */
 const USER_DROPPABLE = ['qrv_session_epoch', 'username', 'avatar', 'last_access', 'last_page', 'id'];
-const CARD_DROPPABLE = ['user_created', 'date_created', 'photo', 'logo', 'background', 'design_config', 'id'];
+const CARD_DROPPABLE = ['user_created', 'date_created', 'photo', 'logo', 'background', 'design_config', 'institution', 'id'];
+const INSTITUTION_DROPPABLE = ['date_created', 'logo', 'logo_raster', 'id'];
 const ROW_DROPPABLE = ['id'];
 
 /** Body for POST /users: whitelisted fields, mapped role + avatar, password. Exported for tests. */
@@ -59,8 +60,8 @@ export function userPayload(row, { roleId = null, password = null, fileMap = new
   return out;
 }
 
-/** Body for POST /items/vcards: owner/photo/logo/background ids mapped onto the target instance. Exported for tests. */
-export function cardPayload(row, { userMap = new Map(), fileMap = new Map() } = {}) {
+/** Body for POST /items/vcards: owner/photo/logo/background/institution ids mapped onto the target instance. Exported for tests. */
+export function cardPayload(row, { userMap = new Map(), fileMap = new Map(), institutionMap = new Map() } = {}) {
   const out = { ...row };
   out.owner = row.owner ? (userMap.get(row.owner) ?? null) : null;
   out.photo = row.photo ? (fileMap.get(row.photo) ?? null) : null;
@@ -69,7 +70,15 @@ export function cardPayload(row, { userMap = new Map(), fileMap = new Map() } = 
   for (const f of ['logo', 'background']) {
     if (f in row) out[f] = row[f] ? (fileMap.get(row[f]) ?? null) : null;
   }
+  if ('institution' in row) out.institution = row.institution ? (institutionMap.get(row.institution) ?? null) : null;
   delete out.user_created;
+  return out;
+}
+
+/** Body for POST /items/qrv_institutions: logo files mapped onto the target instance. Exported for tests. */
+export function institutionPayload(row, { fileMap = new Map() } = {}) {
+  const out = { ...row };
+  for (const f of ['logo', 'logo_raster']) out[f] = row[f] ? (fileMap.get(row[f]) ?? null) : null;
   return out;
 }
 
@@ -245,6 +254,44 @@ async function main() {
   }
   summarize('users', userStats);
 
+  // ---- qrv_institutions -------------------------------------------------------
+  // Matched on name (case-insensitive): an institution is one organisation.
+  const institutionMap = new Map();
+  if ((data.qrv_institutions ?? []).length) {
+    const existingInstitutions = (await api('/items/qrv_institutions?fields=id,name&limit=-1').catch(() => [])) ?? [];
+    const institutionByName = new Map(existingInstitutions.map((i) => [String(i.name).toLocaleLowerCase(), i]));
+    const institutionStats = { created: 0, skipped: 0, updated: 0, failed: 0 };
+    for (const i of data.qrv_institutions) {
+      const existing = institutionByName.get(String(i.name).toLocaleLowerCase());
+      if (existing) {
+        institutionMap.set(i.id, existing.id);
+        if (update) {
+          try {
+            const fields = institutionPayload(i, { fileMap });
+            delete fields.id;
+            await send(api, `/items/qrv_institutions/${existing.id}`, 'PATCH', fields, INSTITUTION_DROPPABLE);
+            institutionStats.updated++;
+          } catch (err) {
+            institutionStats.failed++;
+            console.log(`[import] institution ${i.name}: update failed (${err.message})`);
+          }
+        } else {
+          institutionStats.skipped++;
+        }
+        continue;
+      }
+      try {
+        const { row } = await send(api, '/items/qrv_institutions', 'POST', institutionPayload(i, { fileMap }), INSTITUTION_DROPPABLE);
+        institutionMap.set(i.id, row.id);
+        institutionStats.created++;
+      } catch (err) {
+        institutionStats.failed++;
+        console.log(`[import] institution ${i.name}: ${err.message}`);
+      }
+    }
+    summarize('qrv_institutions', institutionStats);
+  }
+
   // ---- vcards ----------------------------------------------------------------
   const cardMap = new Map();
   const cardStats = { created: 0, skipped: 0, updated: 0, failed: 0 };
@@ -254,7 +301,7 @@ async function main() {
       cardMap.set(c.id, existing.id);
       if (update) {
         try {
-          const fields = cardPayload(c, { userMap, fileMap });
+          const fields = cardPayload(c, { userMap, fileMap, institutionMap });
           delete fields.id;
           delete fields.code;
           await send(api, `/items/vcards/${existing.id}`, 'PATCH', fields, CARD_DROPPABLE);
@@ -269,7 +316,7 @@ async function main() {
       continue;
     }
     try {
-      const { row, dropped } = await send(api, '/items/vcards', 'POST', cardPayload(c, { userMap, fileMap }), CARD_DROPPABLE);
+      const { row, dropped } = await send(api, '/items/vcards', 'POST', cardPayload(c, { userMap, fileMap, institutionMap }), CARD_DROPPABLE);
       cardMap.set(c.id, row.id);
       cardStats.created++;
       if (dropped.length) console.log(`[import] card ${c.code}: dropped unwritable field(s) ${dropped.join(', ')}`);

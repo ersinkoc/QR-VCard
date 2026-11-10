@@ -7,7 +7,8 @@ QR-VCard turns a contact profile into a cohesive digital identity: thirty respon
 - **30 templates across six families** — Corporate, Editorial, Dark, Chromatic, Technical, and Organic.
 - Existing Executive, Editorial, and Signal cards remain compatible; twenty-seven additional templates expand the catalog.
 - Every design uses the card's accent colour, photo or logo, and contact data consistently.
-- A corporate logo can be uploaded independently from the person photo and is reused on the public card, email signature, and contact-image fallback.
+- **Organizations** (panel → Organizations, admins only) hold an organization's name, logo, website, phone, email, brand colour and any number of named addresses. A card picks its organization instead of uploading a logo: the name and logo stay live on every linked card (a rename or a new logo shows everywhere), website/phone/email fill in only where the card leaves them empty, and the card form can copy one of the organization's addresses into the card, where it stays freely editable. Logos may be **SVG**: the card shows the vector, and the panel renders a PNG copy in the browser for the vCard photo and email signatures (Directus does not rasterise SVG). SVGs with scripts, event handlers or external references are refused, and every SVG is served with a sandboxing CSP. Re-run `npm run directus:bootstrap` (or redeploy; production start runs it) to create `qrv_institutions` and `vcards.institution`. Cards with an older card-specific logo keep showing it until an organization with a logo is linked or the old logo is removed.
+- The organization logo is reused on the public card, email signature, and contact-image fallback.
 - The panel's signature studio renders a 1200×360 PNG and copies rich HTML for email clients.
 - Existing installations must run `npm run directus:bootstrap` once to add the idempotent `design_style` field before saving the new design selection.
 

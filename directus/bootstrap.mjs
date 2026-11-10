@@ -267,7 +267,7 @@ async function main() {
   // not be row-scoped, so any signed-in user could read, edit and delete EVERY
   // card straight through the Directus API. Card access now lives in the app
   // server (server/api.mjs), so every such grant is removed here.
-  const LOCKED = new Set(['vcards', 'directus_files']);
+  const LOCKED = new Set(['vcards', 'directus_files', 'qrv_institutions']);
   const lockedPolicies = new Set([publicId, editorPolicyId, userPolicyId]);
   const existingPerms = await api('/permissions?limit=-1', { token: adminToken });
   const stale = existingPerms.filter((p) => lockedPolicies.has(p.policy) && LOCKED.has(p.collection));
@@ -585,6 +585,66 @@ async function main() {
       body: { field: 'expires_on', type: 'date', meta: { interface: 'datetime', note: 'Day access ends (YYYY-MM-DD, optional; enforced by the QR-VCard server)' }, schema: {} },
     });
     console.log('[bootstrap] field qrv_card_access.expires_on created');
+  }
+
+  // ---- institutions -------------------------------------------------------------
+  // Admin-managed organisations a card links to (vcards.institution). The name
+  // and logo show live on every linked card; `addresses` is a list of
+  // { label, address } the card form copies one entry from. `logo` may be an
+  // SVG — Directus cannot rasterise it, so the panel uploads a PNG rendition
+  // as `logo_raster` for the vCard photo and email signatures.
+  let institutionsCollection = null;
+  try {
+    institutionsCollection = await api('/collections/qrv_institutions', { token: adminToken });
+  } catch {
+    /* not created yet */
+  }
+  if (!institutionsCollection) {
+    await api('/collections', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        collection: 'qrv_institutions',
+        meta: { icon: 'domain', note: 'Institutions (organisations) managed in the QR-VCard panel; cards link one for its name, logo and addresses' },
+        schema: {},
+        fields: [
+          { field: 'id', type: 'uuid', meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] }, schema: { is_primary_key: true } },
+          { field: 'date_created', type: 'timestamp', meta: { special: ['date-created'], interface: 'datetime', readonly: true } },
+          { field: 'name', type: 'string', meta: { interface: 'input', required: true, width: 'half' }, schema: { max_length: 120, is_nullable: false } },
+          { field: 'website', type: 'string', meta: { interface: 'input', width: 'half' }, schema: { max_length: 300 } },
+          { field: 'phone', type: 'string', meta: { interface: 'input', width: 'half' }, schema: { max_length: 40 } },
+          { field: 'email', type: 'string', meta: { interface: 'input', width: 'half' }, schema: { max_length: 254 } },
+          { field: 'accent_color', type: 'string', meta: { interface: 'select-color', width: 'half' }, schema: { max_length: 7 } },
+          { field: 'addresses', type: 'json', meta: { interface: 'input-code', options: { language: 'json' }, note: 'List of { label, address } (managed by the QR-VCard server)' } },
+          { field: 'logo', type: 'uuid', meta: { special: ['file'], interface: 'file-image', note: 'Institution logo (SVG, PNG, JPEG or WebP)' } },
+          { field: 'logo_raster', type: 'uuid', meta: { special: ['file'], interface: 'file-image', hidden: true, note: 'PNG rendition of an SVG logo (managed by the QR-VCard server)' } },
+        ],
+      },
+    });
+    console.log('[bootstrap] collection qrv_institutions created');
+  }
+  const hasInstitution = await api('/fields/vcards/institution', { token: adminToken }).then(() => true, () => false);
+  if (!hasInstitution) {
+    await api('/fields/vcards', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        field: 'institution',
+        type: 'uuid',
+        meta: { interface: 'select-dropdown-m2o', special: ['m2o'], display: 'related-values', display_options: { template: '{{name}}' }, options: { template: '{{name}}' }, width: 'half', note: 'Linked institution: its name and logo show on the card (managed by the QR-VCard server)' },
+        schema: {},
+      },
+    });
+    console.log('[bootstrap] field vcards.institution created');
+  }
+  const hasInstitutionLink = await api('/relations/vcards/institution', { token: adminToken }).then(() => true, () => false);
+  if (!hasInstitutionLink) {
+    await api('/relations', {
+      method: 'POST',
+      token: adminToken,
+      body: { collection: 'vcards', field: 'institution', related_collection: 'qrv_institutions', schema: { on_delete: 'SET NULL' } },
+    });
+    console.log('[bootstrap] relation vcards.institution -> qrv_institutions (SET NULL) created');
   }
 
   // ---- usernames ---------------------------------------------------------------

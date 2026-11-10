@@ -31,6 +31,14 @@
  *   GET    /api/public/cards/:code/logo[?format=jpg]
  *   GET    /api/public/cards/:code/background
  *
+ *   GET    /api/institutions            every signed-in user (the card form's picker)
+ *   POST   /api/institutions            admin
+ *   PATCH  /api/institutions/:id        admin (a rename is copied onto linked cards)
+ *   DELETE /api/institutions/:id[?detach=1]   admin; 409 IN_USE while cards link it
+ *   GET    /api/institutions/:id/logo[?format=jpg]
+ *   POST|DELETE /api/institutions/:id/logo     admin: JPEG/PNG/WebP or SVG
+ *   POST   /api/institutions/:id/logo/raster  admin: PNG rendition of an SVG logo
+ *
  *   GET    /api/users?q=                admin: accounts with card counts
  *   POST   /api/users                   admin
  *   PATCH  /api/users/:id               admin (role, status, password, profile)
@@ -48,17 +56,26 @@ import { canManageCard, canManageUsers, canSeeAllCards, cardScope, roleKind, ROL
 import { createDirectusClient, DirectusError } from './directus-client.mjs';
 import { clientKey, createRateLimiter } from './rate-limit.mjs';
 import { createSessionCodec, parseCookies, serializeCookie, SESSION_COOKIE, SESSION_RENEW_MS } from './session.mjs';
-import { generateCode, UUID_RE, validateCardInput, validateCode, validateExpiresOn, validatePassword, validateUserInput } from './validate.mjs';
+import { sniffSvg, SVG_HEADERS, unsafeSvg } from './svg.mjs';
+import { generateCode, UUID_RE, validateCardInput, validateCode, validateExpiresOn, validateInstitutionInput, validatePassword, validateUserInput } from './validate.mjs';
 
 const JSON_LIMIT = 64 * 1024;
 const PHOTO_LIMIT = 4 * 1024 * 1024;
 const USER_CACHE_MS = 10_000;
 const EPOCH_FIELD = 'qrv_session_epoch';
 
-const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'qrv_views', 'is_primary', 'date_created', 'owner'];
+const CARD_FIELDS = ['id', 'status', 'code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'institution', 'qrv_views', 'is_primary', 'date_created', 'owner'];
 /** The card↔collaborator junction (qrv_card_access): rows granting people access to a card. */
 const ACCESS_FIELDS = ['id', 'card', 'user', 'expires_on'];
-const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background'];
+const PUBLIC_FIELDS = ['code', 'first_name', 'last_name', 'organization', 'job_title', 'phone', 'email', 'website', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'address', 'note', 'accent_color', 'photo', 'logo', 'photo_style', 'design_style', 'design_config', 'background', 'institution'];
+/**
+ * Institutions (qrv_institutions): an admin-managed organisation a card links
+ * to. Its name and logo are LIVE on the card (a rename or a new logo shows on
+ * every linked card); website / phone / email fill only what the card leaves
+ * empty; addresses are a list the card form COPIES one entry from.
+ */
+const INSTITUTION_COLLECTION = 'qrv_institutions';
+const INSTITUTION_FIELDS = ['id', 'name', 'website', 'phone', 'email', 'accent_color', 'addresses', 'logo', 'logo_raster', 'date_created'];
 const USER_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', 'last_access', 'username', 'role.id', 'role.name'];
 const AUDIT_FIELDS = ['id', 'date_created', 'actor', 'actor_email', 'action', 'target', 'detail'];
 const AUDIT_COLLECTION = 'qrv_audit_log';
@@ -175,9 +192,48 @@ const fail = (fields) => {
 
 // --- DTOs --------------------------------------------------------------------
 
-function cardDto(row, owners, collaborators) {
+/** File ids double as cache-busters; the first 8 characters are enough and grant nothing. */
+const fileTag = (id) => (id ? String(id).slice(0, 8) : null);
+
+function institutionDto(row, cardCount) {
+  const dto = {
+    id: row.id,
+    name: row.name ?? '',
+    website: row.website ?? null,
+    phone: row.phone ?? null,
+    email: row.email ?? null,
+    accent_color: row.accent_color ?? null,
+    addresses: Array.isArray(row.addresses) ? row.addresses.filter((a) => a && a.label && a.address).map((a) => ({ label: String(a.label), address: String(a.address) })) : [],
+    logo: fileTag(row.logo),
+  };
+  if (cardCount !== undefined) dto.card_count = cardCount;
+  return dto;
+}
+
+/**
+ * The card as a visitor sees it once its institution is applied: the name is
+ * the institution's (live), contact fields fall back to the institution's
+ * when the card leaves them empty. The card's own address is never replaced —
+ * institution addresses are only offered for copying in the panel.
+ */
+function withInstitution(row, inst) {
+  if (!inst) return row;
+  return {
+    ...row,
+    organization: inst.name || row.organization,
+    website: row.website || inst.website || null,
+    phone: row.phone || inst.phone || null,
+    email: row.email || inst.email || null,
+  };
+}
+
+function cardDto(row, owners, institutions) {
   const dto = {};
   for (const f of CARD_FIELDS) if (f !== 'owner' && f !== 'is_primary') dto[f] = row[f] ?? null;
+  // The panel keeps the card's own fields raw (it edits them) and gets the
+  // linked institution alongside; the card's legacy `logo` stays its own file.
+  const inst = row.institution ? institutions?.get(row.institution) : null;
+  dto.institution = inst ? institutionDto(inst) : null;
   dto.is_primary = Boolean(row.is_primary);
   dto.qrv_views = Number(row.qrv_views ?? 0) || 0;
   if (owners) {
@@ -186,17 +242,19 @@ function cardDto(row, owners, collaborators) {
       ? { id: row.owner, email: owner?.email ?? null, name: owner ? [owner.first_name, owner.last_name].filter(Boolean).join(' ') || null : null }
       : null;
   }
-  if (collaborators) dto.collaborators = collaborators;
   return dto;
 }
 
-function publicCardDto(row) {
+function publicCardDto(row, inst) {
+  const merged = withInstitution(row, inst);
   const dto = {};
-  for (const f of PUBLIC_FIELDS) if (f !== 'photo') dto[f] = row[f] ?? null;
+  for (const f of PUBLIC_FIELDS) if (f !== 'institution') dto[f] = merged[f] ?? null;
   // The file id doubles as a cache-buster; it grants nothing on its own, because
-  // photos are only ever served through this API.
-  dto.photo = row.photo ? String(row.photo).slice(0, 8) : null;
-  dto.background = row.background ? String(row.background).slice(0, 8) : null;
+  // images are only ever served through this API. `logo` tags the EFFECTIVE
+  // logo, so swapping the institution's logo busts every linked card's cache.
+  dto.photo = fileTag(row.photo);
+  dto.logo = fileTag(inst?.logo ?? row.logo);
+  dto.background = fileTag(row.background);
   return dto;
 }
 
@@ -316,6 +374,15 @@ export function createApiHandler(config) {
   let viewDaysSupported = true;
   // Card sharing (qrv_card_access) degrades like the other optional schema:
   // missing collection → one warning, cards keep working unshared.
+  // Institutions (qrv_institutions + vcards.institution) degrade the same way:
+  // missing schema → one warning, cards keep their own organisation text.
+  let institutionsSupported = true;
+  function noteInstitutionsUnsupported(err) {
+    if (!institutionsSupported) return;
+    institutionsSupported = false;
+    fieldsForCards = fieldsForCards.filter((f) => f !== 'institution');
+    log.warn?.(`[api] ${INSTITUTION_COLLECTION} / vcards.institution is missing — re-run npm run directus:bootstrap; institutions are off (${err?.message ?? err})`);
+  }
   let accessSupported = true;
   function noteAccessUnsupported(err) {
     accessSupported = false;
@@ -355,6 +422,14 @@ export function createApiHandler(config) {
         fieldsForCards = fieldsForCards.filter((f) => f !== 'background');
         log.warn?.('[api] vcards.background is missing — re-run npm run directus:bootstrap; page background images are off');
         if (query?.fields) query.fields = query.fields.filter((f) => f !== 'background');
+        return cardsRequest(path, { method, query, body });
+      }
+      // Before the logo check: "institution" never contains "logo", but it
+      // must be caught here, not mistaken for some other missing column.
+      if (institutionsSupported && err instanceof DirectusError && /\binstitution\b/.test(String(err.message))) {
+        noteInstitutionsUnsupported(err);
+        if (query?.fields) query.fields = query.fields.filter((f) => f !== 'institution');
+        if (body && typeof body === 'object' && 'institution' in body) delete body.institution;
         return cardsRequest(path, { method, query, body });
       }
       if (logosSupported && err instanceof DirectusError && String(err.message).includes('logo')) {
@@ -439,6 +514,71 @@ export function createApiHandler(config) {
       query: { fields: ['id', 'email', 'first_name', 'last_name'], filter: { id: { _in: unique } }, limit: -1 },
     });
     return new Map((rows ?? []).map((u) => [u.id, u]));
+  }
+
+  // ---- institutions ----
+
+  async function institutionsRequest(path, { method = 'GET', query, body } = {}) {
+    try {
+      return await directus.request(path, { method, query, body });
+    } catch (err) {
+      if (institutionsSupported && err instanceof DirectusError && String(err.message).includes(INSTITUTION_COLLECTION)) {
+        noteInstitutionsUnsupported(err);
+      }
+      if (!institutionsSupported) throw new ApiError(501, 'NOT_SUPPORTED', 're-run npm run directus:bootstrap to enable institutions');
+      throw err;
+    }
+  }
+
+  /** Institution rows by id, for the cards that link one. Never fails a card response. */
+  async function institutionsFor(ids) {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!institutionsSupported || unique.length === 0) return new Map();
+    try {
+      const rows = await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, {
+        query: { fields: INSTITUTION_FIELDS, filter: { id: { _in: unique } }, limit: -1 },
+      });
+      return new Map((rows ?? []).map((r) => [r.id, r]));
+    } catch (err) {
+      log.warn?.(`[api] institution lookup failed: ${err?.message ?? err}`);
+      return new Map();
+    }
+  }
+
+  async function institutionOf(card) {
+    return card?.institution ? ((await institutionsFor([card.institution])).get(card.institution) ?? null) : null;
+  }
+
+  async function findInstitution(id) {
+    if (!UUID_RE.test(String(id ?? ''))) return null;
+    const rows = await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, { query: { fields: INSTITUTION_FIELDS, filter: { id: { _eq: id } }, limit: 1 } });
+    return rows?.[0] ?? null;
+  }
+
+  /**
+   * Links (or unlinks) the institution named in validated card input. The
+   * institution's name is copied into `organization`, so search, the vCard
+   * and the "a card needs a name" rule keep working on the stored row.
+   */
+  async function applyInstitutionInput(data) {
+    if (!('institution' in data)) return;
+    if (!institutionsSupported) {
+      delete data.institution;
+      return;
+    }
+    if (data.institution === null) return;
+    const inst = await findInstitution(data.institution);
+    if (!inst) fail({ institution: 'invalid' });
+    data.organization = inst.name;
+  }
+
+  /** The panel's card DTO: owner (privileged actors) and linked institution resolved. */
+  async function cardView(row, actor) {
+    const [owners, institutions] = await Promise.all([
+      canSeeAllCards(actor.kind) ? ownersFor([row.owner]) : null,
+      institutionsFor([row.institution]),
+    ]);
+    return cardDto(row, owners, institutions);
   }
 
   async function countCards(ownerId) {
@@ -641,7 +781,10 @@ export function createApiHandler(config) {
         rows = [...rows, ...shared];
       }
     }
-    const owners = privileged || rows.some((r) => r.owner !== actor.id) ? await ownersFor(rows.map((r) => r.owner)) : null;
+    const [owners, institutions] = await Promise.all([
+      privileged || rows.some((r) => r.owner !== actor.id) ? ownersFor(rows.map((r) => r.owner)) : null,
+      institutionsFor(rows.map((r) => r.institution)),
+    ]);
     // One aggregate for the whole page: how many people share each card (the
     // badge); the full list comes from GET /api/cards/:id/shares on demand.
     let shareCounts = new Map();
@@ -661,7 +804,7 @@ export function createApiHandler(config) {
       }
     }
     sendJson(res, 200, { data: rows.map((r) => {
-      const dto = cardDto(r, owners);
+      const dto = cardDto(r, owners, institutions);
       const n = shareCounts.get(r.id);
       if (n) dto.collaborator_count = n;
       return dto;
@@ -686,6 +829,7 @@ export function createApiHandler(config) {
       if (problem) errors.code = problem;
     }
     if (Object.keys(errors).length) fail(errors);
+    await applyInstitutionInput(data);
 
     const ownerId = (await resolveOwner(body, actor)) ?? actor.id;
     if (!canSeeAllCards(actor.kind) && (await countCards(actor.id)) >= maxCardsPerUser) {
@@ -701,13 +845,12 @@ export function createApiHandler(config) {
     for (let attempt = 0; attempt < 5; attempt++) {
       const code = customCode ?? generateCode();
       try {
-        const created = await directus.request('/items/vcards', { method: 'POST', body: { ...base, code }, query: { fields: CARD_FIELDS } });
+        const created = await directus.request('/items/vcards', { method: 'POST', body: { ...base, code }, query: { fields: fieldsForCards } });
         if (created.is_primary || (isFirstCard === true && !(await anyPrimaryCard(ownerId)))) {
           await setPrimaryCard(ownerId, created.id);
           created.is_primary = true;
         }
-        const owners = canSeeAllCards(actor.kind) ? await ownersFor([created.owner]) : null;
-        sendJson(res, 201, { data: cardDto(created, owners) });
+        sendJson(res, 201, { data: await cardView(created, actor) });
         return;
       } catch (err) {
         const duplicate = err instanceof DirectusError && err.code === 'RECORD_NOT_UNIQUE';
@@ -723,6 +866,7 @@ export function createApiHandler(config) {
     const body = await readJson(req);
     const { data, errors } = validateCardInput(body, { partial: true });
     if (Object.keys(errors).length) fail(errors);
+    await applyInstitutionInput(data);
     const ownerId = await resolveOwner(body, actor);
     if (ownerId) {
       // Reassigning a card is ownership-level, like deleting: a collaborator
@@ -731,12 +875,11 @@ export function createApiHandler(config) {
       data.owner = ownerId;
     }
     const updated = Object.keys(data).length
-      ? await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: data, query: { fields: CARD_FIELDS } })
+      ? await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: data, query: { fields: fieldsForCards } })
       : card;
     // Claiming or re-pointing the /<username> URL at this card.
     if (updated.is_primary && !card.is_primary) await setPrimaryCard(updated.owner, updated.id);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function deleteCard({ req, res, actor, params }) {
@@ -759,29 +902,73 @@ export function createApiHandler(config) {
    * rather than on the encoder's default black.
    */
   async function streamCardImage(res, card, { field, format, cache }) {
-    const jpg = format === 'jpg';
     const logo = field === 'logo' || (field === 'photo' && card.photo_style === 'logo');
     // A page background is a wide cover image: keep its shape at screen size.
-    const wide = field === 'background';
-    const upstream = await directus.request(`/assets/${card[field]}`, {
+    const kind = field === 'background' ? 'wide' : logo ? 'logo' : 'photo';
+    await streamImage(res, card[field], { kind, format, cache });
+  }
+
+  /**
+   * Streams a Directus file resized for its use. Directus passes SVG through
+   * untransformed (no rasterising), so an SVG arrives as-is: it is served with
+   * the sandboxing CSP — and refused (404) where a JPEG was asked for, since
+   * the vCard and email consumers of `?format=jpg` cannot render vectors.
+   */
+  async function streamImage(res, fileId, { kind, format, cache }) {
+    const jpg = format === 'jpg';
+    const wide = kind === 'wide';
+    const upstream = await directus.request(`/assets/${fileId}`, {
       raw: true,
       query: {
         width: wide ? 1600 : 512,
         height: wide ? 1600 : 512,
-        fit: logo || wide ? 'inside' : 'cover',
+        fit: kind === 'photo' ? 'cover' : 'inside',
         quality: 82,
         format: jpg ? 'jpg' : 'webp',
         ...(jpg ? { transforms: JSON.stringify([['flatten', { background: '#ffffff' }]]) } : {}),
       },
     });
+    const type = (upstream.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase();
+    const svg = type === 'image/svg+xml';
+    if (svg && jpg) {
+      await upstream.arrayBuffer().catch(() => {});
+      throw new ApiError(404, 'NOT_FOUND', 'no raster rendition of this vector logo');
+    }
     const body = Buffer.from(await upstream.arrayBuffer());
     res.writeHead(200, {
-      'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+      'Content-Type': svg ? 'image/svg+xml' : type,
       'Content-Length': body.length,
       'Cache-Control': cache,
       'X-Content-Type-Options': 'nosniff',
+      ...(svg ? SVG_HEADERS : {}),
     });
     res.end(body);
+  }
+
+  /**
+   * Reads an uploaded logo: JPEG/PNG/WebP by magic bytes, or an SVG that
+   * passes unsafeSvg. Returns { buf, type, ext }.
+   */
+  async function readLogoUpload(req, { allowSvg }) {
+    const buf = await readRaw(req, PHOTO_LIMIT).catch((err) => {
+      if (err instanceof ApiError && err.code === 'PAYLOAD_TOO_LARGE') throw new ApiError(413, 'PHOTO_TOO_LARGE');
+      throw err;
+    });
+    const raster = sniffImage(buf);
+    if (raster) return { buf, type: raster, ext: PHOTO_TYPES[raster] };
+    if (allowSvg && sniffSvg(buf)) {
+      const reason = unsafeSvg(buf.toString('utf8'));
+      if (reason) throw new ApiError(415, 'SVG_UNSAFE', `the SVG contains active content (${reason})`);
+      return { buf, type: 'image/svg+xml', ext: 'svg' };
+    }
+    throw new ApiError(415, allowSvg ? 'LOGO_TYPE' : 'PHOTO_TYPE', allowSvg ? 'use an SVG, JPEG, PNG or WebP image' : 'use a JPEG, PNG or WebP image');
+  }
+
+  async function uploadFile(title, filename, { buf, type }) {
+    const form = new FormData();
+    form.append('title', title);
+    form.append('file', new Blob([buf], { type }), filename);
+    return directus.request('/files', { method: 'POST', body: form });
   }
 
   async function getCardPhoto({ res, url, actor, params }) {
@@ -803,18 +990,16 @@ export function createApiHandler(config) {
     form.append('title', `vcard ${card.code}`);
     form.append('file', new Blob([buf], { type }), `vcard-${card.code}.${PHOTO_TYPES[type]}`);
     const file = await directus.request('/files', { method: 'POST', body: form });
-    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { photo: file.id }, query: { fields: CARD_FIELDS } });
+    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { photo: file.id }, query: { fields: fieldsForCards } });
     await deleteFileQuietly(card.photo);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function deleteCardPhoto({ res, actor, params }) {
     const card = await managedCard(params.id, actor, fieldsForCards);
-    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { photo: null }, query: { fields: CARD_FIELDS } });
+    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { photo: null }, query: { fields: fieldsForCards } });
     await deleteFileQuietly(card.photo);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function getCardLogo({ res, url, actor, params }) {
@@ -836,18 +1021,16 @@ export function createApiHandler(config) {
     form.append('title', `vcard logo ${card.code}`);
     form.append('file', new Blob([buf], { type }), `vcard-logo-${card.code}.${PHOTO_TYPES[type]}`);
     const file = await directus.request('/files', { method: 'POST', body: form });
-    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: file.id }, query: { fields: CARD_FIELDS } });
+    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: file.id }, query: { fields: fieldsForCards } });
     await deleteFileQuietly(card.logo);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function deleteCardLogo({ res, actor, params }) {
     const card = await managedCard(params.id, actor, fieldsForCards);
-    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: null }, query: { fields: CARD_FIELDS } });
+    const updated = await directus.request(`/items/vcards/${card.id}`, { method: 'PATCH', body: { logo: null }, query: { fields: fieldsForCards } });
     await deleteFileQuietly(card.logo);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function getCardBackground({ res, actor, params }) {
@@ -871,21 +1054,18 @@ export function createApiHandler(config) {
     const file = await directus.request('/files', { method: 'POST', body: form });
     const updated = await cardsRequest(`/items/vcards/${card.id}`, { method: 'PATCH', body: { background: file.id }, query: { fields: fieldsForCards } });
     await deleteFileQuietly(card.background);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function deleteCardBackground({ res, actor, params }) {
     const card = await managedCard(params.id, actor, fieldsForCards);
     if (!card.background) {
-      const owners = canSeeAllCards(actor.kind) ? await ownersFor([card.owner]) : null;
-      sendJson(res, 200, { data: cardDto(card, owners) });
+      sendJson(res, 200, { data: await cardView(card, actor) });
       return;
     }
     const updated = await cardsRequest(`/items/vcards/${card.id}`, { method: 'PATCH', body: { background: null }, query: { fields: fieldsForCards } });
     await deleteFileQuietly(card.background);
-    const owners = canSeeAllCards(actor.kind) ? await ownersFor([updated.owner]) : null;
-    sendJson(res, 200, { data: cardDto(updated, owners) });
+    sendJson(res, 200, { data: await cardView(updated, actor) });
   }
 
   async function publishedByCode(code) {
@@ -938,7 +1118,7 @@ export function createApiHandler(config) {
     const card = await publishedByUsername(String(params.username ?? '').toLowerCase());
     if (!card) throw new ApiError(404, 'NOT_FOUND');
     if (!(await authenticate(req, res))) countCardView(card);
-    sendJson(res, 200, { data: publicCardDto(card) });
+    sendJson(res, 200, { data: publicCardDto(card, await institutionOf(card)) });
   }
 
 /**
@@ -1033,7 +1213,7 @@ function dayString(msOrDate) {
     // Signed-in panel previews do not inflate the public counter; only an
     // anonymous visit — a real scan of the printed QR code — counts.
     if (!(await authenticate(req, res))) countCardView(card);
-    sendJson(res, 200, { data: publicCardDto(card) });
+    sendJson(res, 200, { data: publicCardDto(card, await institutionOf(card)) });
   }
 
   async function getPublicPhoto({ res, url, params }) {
@@ -1042,16 +1222,136 @@ function dayString(msOrDate) {
     await streamCardImage(res, card, { field: 'photo', format: url.searchParams.get('format'), cache: 'public, max-age=300' });
   }
 
+  /** The card's EFFECTIVE logo: its institution's when linked, else its own. */
   async function getPublicLogo({ res, url, params }) {
     const card = await publishedByCode(params.code);
-    if (!card?.logo) throw new ApiError(404, 'NOT_FOUND');
-    await streamCardImage(res, card, { field: 'logo', format: url.searchParams.get('format'), cache: 'public, max-age=300' });
+    if (!card) throw new ApiError(404, 'NOT_FOUND');
+    const inst = await institutionOf(card);
+    const format = url.searchParams.get('format');
+    const fileId = inst?.logo ? (format === 'jpg' && inst.logo_raster ? inst.logo_raster : inst.logo) : card.logo;
+    if (!fileId) throw new ApiError(404, 'NOT_FOUND');
+    await streamImage(res, fileId, { kind: 'logo', format, cache: 'public, max-age=300' });
   }
 
   async function getPublicBackground({ res, params }) {
     const card = await publishedByCode(params.code);
     if (!card?.background) throw new ApiError(404, 'NOT_FOUND');
     await streamCardImage(res, card, { field: 'background', cache: 'public, max-age=300' });
+  }
+
+  // ---- institutions (admin-managed; every signed-in user can pick one) ----
+
+  async function managedInstitution(id) {
+    const inst = await findInstitution(id);
+    if (!inst) throw new ApiError(404, 'NOT_FOUND');
+    return inst;
+  }
+
+  /** How many cards link each institution (admin listing and the delete guard). */
+  async function institutionCardCounts(ids) {
+    if (!ids.length) return new Map();
+    const rows = await cardsRequest('/items/vcards', {
+      query: { aggregate: { count: '*' }, groupBy: ['institution'], filter: { institution: { _in: ids } }, limit: -1 },
+    });
+    return new Map((rows ?? []).map((r) => [r.institution, Number(r.count ?? 0)]));
+  }
+
+  async function listInstitutions({ res, actor }) {
+    if (!institutionsSupported) {
+      sendJson(res, 200, { data: [] });
+      return;
+    }
+    const rows = (await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, { query: { fields: INSTITUTION_FIELDS, sort: ['name'], limit: -1 } })) ?? [];
+    const counts = canManageUsers(actor.kind) ? await institutionCardCounts(rows.map((r) => r.id)) : null;
+    sendJson(res, 200, { data: rows.map((r) => institutionDto(r, counts ? (counts.get(r.id) ?? 0) : undefined)) });
+  }
+
+  async function createInstitution({ req, res, actor }) {
+    const body = await readJson(req);
+    const { data, errors } = validateInstitutionInput(body);
+    if (Object.keys(errors).length) fail(errors);
+    const created = await institutionsRequest(`/items/${INSTITUTION_COLLECTION}`, { method: 'POST', body: { addresses: [], ...data }, query: { fields: INSTITUTION_FIELDS } });
+    audit({ req, actor, action: 'institution.create', target: created.name });
+    sendJson(res, 201, { data: institutionDto(created, 0) });
+  }
+
+  async function updateInstitution({ req, res, actor, params }) {
+    const inst = await managedInstitution(params.id);
+    const body = await readJson(req);
+    const { data, errors } = validateInstitutionInput(body, { partial: true });
+    if (Object.keys(errors).length) fail(errors);
+    const updated = Object.keys(data).length
+      ? await institutionsRequest(`/items/${INSTITUTION_COLLECTION}/${inst.id}`, { method: 'PATCH', body: data, query: { fields: INSTITUTION_FIELDS } })
+      : inst;
+    // Linked cards carry a copy of the name (search, vCard ORG): keep it current.
+    if (data.name && data.name !== inst.name) {
+      await cardsRequest('/items/vcards', { method: 'PATCH', body: { query: { filter: { institution: { _eq: inst.id } }, limit: -1 }, data: { organization: data.name } } });
+    }
+    const changed = Object.keys(data).filter((k) => JSON.stringify(data[k] ?? null) !== JSON.stringify(inst[k] ?? null));
+    if (changed.length) audit({ req, actor, action: 'institution.update', target: updated.name, detail: `fields: ${changed.join(', ')}${data.name && data.name !== inst.name ? `; name: ${inst.name} → ${data.name}` : ''}` });
+    sendJson(res, 200, { data: institutionDto(updated, (await institutionCardCounts([inst.id])).get(inst.id) ?? 0) });
+  }
+
+  /**
+   * Deleting an institution cards still use needs `?detach=1`: those cards
+   * keep the copied name as plain text but lose the logo, which the admin
+   * must have confirmed. Without it: 409 IN_USE with the count.
+   */
+  async function deleteInstitution({ req, res, url, actor, params }) {
+    const inst = await managedInstitution(params.id);
+    const count = (await institutionCardCounts([inst.id])).get(inst.id) ?? 0;
+    if (count > 0 && url.searchParams.get('detach') !== '1') {
+      throw new ApiError(409, 'IN_USE', `${count} card(s) use this institution`, { count: String(count) });
+    }
+    if (count > 0) {
+      await cardsRequest('/items/vcards', { method: 'PATCH', body: { query: { filter: { institution: { _eq: inst.id } }, limit: -1 }, data: { institution: null, organization: inst.name } } });
+    }
+    await institutionsRequest(`/items/${INSTITUTION_COLLECTION}/${inst.id}`, { method: 'DELETE' });
+    await deleteFileQuietly(inst.logo);
+    await deleteFileQuietly(inst.logo_raster);
+    audit({ req, actor, action: 'institution.delete', target: inst.name, detail: `cards detached: ${count}` });
+    sendJson(res, 200, { data: { cards: count } });
+  }
+
+  async function getInstitutionLogo({ res, url, params }) {
+    const inst = await managedInstitution(params.id);
+    const format = url.searchParams.get('format');
+    const fileId = format === 'jpg' && inst.logo_raster ? inst.logo_raster : inst.logo;
+    if (!fileId) throw new ApiError(404, 'NOT_FOUND');
+    await streamImage(res, fileId, { kind: 'logo', format, cache: 'private, max-age=300' });
+  }
+
+  /**
+   * A new logo replaces both files: an SVG's PNG rendition is uploaded right
+   * after it (POST …/logo/raster) by the panel, which renders it in the browser
+   * — Directus cannot rasterise SVG, and the vCard / email need a bitmap.
+   */
+  async function uploadInstitutionLogo({ req, res, params }) {
+    const inst = await managedInstitution(params.id);
+    const upload = await readLogoUpload(req, { allowSvg: true });
+    const file = await uploadFile(`institution logo ${inst.name}`, `institution-logo-${inst.id.slice(0, 8)}.${upload.ext}`, upload);
+    const updated = await institutionsRequest(`/items/${INSTITUTION_COLLECTION}/${inst.id}`, { method: 'PATCH', body: { logo: file.id, logo_raster: null }, query: { fields: INSTITUTION_FIELDS } });
+    await deleteFileQuietly(inst.logo);
+    await deleteFileQuietly(inst.logo_raster);
+    sendJson(res, 200, { data: institutionDto(updated) });
+  }
+
+  async function uploadInstitutionLogoRaster({ req, res, params }) {
+    const inst = await managedInstitution(params.id);
+    if (!inst.logo) throw new ApiError(409, 'NO_LOGO', 'upload the logo first');
+    const upload = await readLogoUpload(req, { allowSvg: false });
+    const file = await uploadFile(`institution logo raster ${inst.name}`, `institution-logo-${inst.id.slice(0, 8)}-raster.${upload.ext}`, upload);
+    const updated = await institutionsRequest(`/items/${INSTITUTION_COLLECTION}/${inst.id}`, { method: 'PATCH', body: { logo_raster: file.id }, query: { fields: INSTITUTION_FIELDS } });
+    await deleteFileQuietly(inst.logo_raster);
+    sendJson(res, 200, { data: institutionDto(updated) });
+  }
+
+  async function deleteInstitutionLogo({ res, params }) {
+    const inst = await managedInstitution(params.id);
+    const updated = await institutionsRequest(`/items/${INSTITUTION_COLLECTION}/${inst.id}`, { method: 'PATCH', body: { logo: null, logo_raster: null }, query: { fields: INSTITUTION_FIELDS } });
+    await deleteFileQuietly(inst.logo);
+    await deleteFileQuietly(inst.logo_raster);
+    sendJson(res, 200, { data: institutionDto(updated) });
   }
 
   async function listUsers({ res, url }) {
@@ -1567,6 +1867,14 @@ function dayString(msOrDate) {
     ['POST', /^\/api\/cards\/(?<id>[^/]+)\/shares$/, addCardShare, 'user'],
     ['PATCH', /^\/api\/cards\/(?<id>[^/]+)\/shares\/(?<userId>[^/]+)$/, patchCardShare, 'user'],
     ['DELETE', /^\/api\/cards\/(?<id>[^/]+)\/shares\/(?<userId>[^/]+)$/, removeCardShare, 'user'],
+    ['GET', /^\/api\/institutions$/, listInstitutions, 'user'],
+    ['POST', /^\/api\/institutions$/, createInstitution, 'admin'],
+    ['PATCH', /^\/api\/institutions\/(?<id>[^/]+)$/, updateInstitution, 'admin'],
+    ['DELETE', /^\/api\/institutions\/(?<id>[^/]+)$/, deleteInstitution, 'admin'],
+    ['GET', /^\/api\/institutions\/(?<id>[^/]+)\/logo$/, getInstitutionLogo, 'user'],
+    ['POST', /^\/api\/institutions\/(?<id>[^/]+)\/logo$/, uploadInstitutionLogo, 'admin'],
+    ['DELETE', /^\/api\/institutions\/(?<id>[^/]+)\/logo$/, deleteInstitutionLogo, 'admin'],
+    ['POST', /^\/api\/institutions\/(?<id>[^/]+)\/logo\/raster$/, uploadInstitutionLogoRaster, 'admin'],
     ['GET', /^\/api\/users$/, listUsers, 'admin'],
     ['POST', /^\/api\/users$/, createUser, 'admin'],
     ['PATCH', /^\/api\/users\/(?<id>[^/]+)$/, updateUser, 'admin'],

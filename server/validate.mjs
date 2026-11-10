@@ -139,6 +139,72 @@ function cleanString(value) {
   return s === '' ? null : s;
 }
 
+/** `example.com` → `https://example.com`; null when it is not an http(s) address. */
+function normalizeWebsite(value) {
+  const candidate = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  try {
+    const u = new URL(candidate);
+    return /^https?:$/.test(u.protocol) && u.hostname.includes('.') ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+export const INSTITUTION_LIMITS = { name: 120, website: 300, phone: 40, email: 254 };
+/** An institution's named addresses: a card copies one of them into its own address. */
+export const ADDRESS_LIMITS = { count: 30, label: 80, address: 500 };
+
+/**
+ * Admin-side institution create/update. `addresses` is a list of
+ * `{ label, address }`, both required per entry; the whole list is replaced
+ * on every write (the panel edits it as one form).
+ */
+export function validateInstitutionInput(input, { partial = false } = {}) {
+  const src = input && typeof input === 'object' ? input : {};
+  const data = {};
+  const errors = {};
+
+  for (const [field, max] of Object.entries(INSTITUTION_LIMITS)) {
+    if (!(field in src)) continue;
+    const value = cleanString(src[field]);
+    if (value !== null && value.length > max) errors[field] = 'too_long';
+    else data[field] = value;
+  }
+  if (!partial || 'name' in src) {
+    if (!data.name && !errors.name) errors.name = 'required';
+  }
+  if (data.email && !EMAIL_RE.test(data.email)) errors.email = 'invalid_email';
+  if (data.phone && !PHONE_RE.test(data.phone)) errors.phone = 'invalid_phone';
+  if (data.website) {
+    const website = normalizeWebsite(data.website);
+    if (website) data.website = website;
+    else errors.website = 'invalid_url';
+  }
+  if ('accent_color' in src) {
+    const c = cleanString(src.accent_color);
+    if (c !== null && !COLOR_RE.test(c)) errors.accent_color = 'invalid_color';
+    else data.accent_color = c;
+  }
+  if ('addresses' in src) {
+    const list = src.addresses ?? [];
+    if (!Array.isArray(list) || list.length > ADDRESS_LIMITS.count) errors.addresses = 'invalid_addresses';
+    else {
+      const clean = [];
+      for (const entry of list) {
+        const label = cleanString(entry?.label);
+        const address = cleanString(entry?.address);
+        if (!label || !address || label.length > ADDRESS_LIMITS.label || address.length > ADDRESS_LIMITS.address) {
+          errors.addresses = 'invalid_addresses';
+          break;
+        }
+        clean.push({ label, address });
+      }
+      if (!errors.addresses) data.addresses = clean;
+    }
+  }
+  return { data, errors };
+}
+
 /**
  * `partial` (PATCH) validates only the fields present; a create additionally
  * requires something to call the card by.
@@ -161,14 +227,9 @@ export function validateCardInput(input, { partial = false } = {}) {
   if (data.email && !EMAIL_RE.test(data.email)) errors.email = 'invalid_email';
   if (data.phone && !PHONE_RE.test(data.phone)) errors.phone = 'invalid_phone';
   if (data.website) {
-    const candidate = /^https?:\/\//i.test(data.website) ? data.website : `https://${data.website}`;
-    try {
-      const u = new URL(candidate);
-      if (!/^https?:$/.test(u.protocol) || !u.hostname.includes('.')) throw new Error('bad');
-      data.website = candidate;
-    } catch {
-      errors.website = 'invalid_url';
-    }
+    const website = normalizeWebsite(data.website);
+    if (website) data.website = website;
+    else errors.website = 'invalid_url';
   }
 
   // Social profiles: accept a full URL or a bare handle, store the canonical
@@ -219,10 +280,19 @@ export function validateCardInput(input, { partial = false } = {}) {
     else data.design_config = value;
   }
 
-  if (!partial && !data.first_name && !data.last_name && !data.organization && !errors.first_name) {
+  // The linked institution (qrv_institutions id); null/'' unlinks. Existence
+  // is checked by the API, which also copies the institution's name in.
+  if ('institution' in src) {
+    if (src.institution === null || src.institution === '') data.institution = null;
+    else if (typeof src.institution === 'string' && UUID_RE.test(src.institution)) data.institution = src.institution;
+    else errors.institution = 'invalid';
+  }
+
+  // A linked institution names the card too (the API copies its name in).
+  if (!partial && !data.first_name && !data.last_name && !data.organization && !data.institution && !errors.first_name) {
     errors.first_name = 'name_required';
   }
-  if (partial && ['first_name', 'last_name', 'organization'].every((f) => f in data && data[f] === null)) {
+  if (partial && !data.institution && ['first_name', 'last_name', 'organization'].every((f) => f in data && data[f] === null)) {
     errors.first_name = 'name_required';
   }
 

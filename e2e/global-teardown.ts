@@ -32,7 +32,15 @@ export default async function globalTeardown() {
       }
       await api.request(`/users/${user.id}`, { method: 'DELETE' });
     }
-    process.stdout.write(`[e2e] teardown: ${disposable.length} test account(s) deleted\n`);
+    // Institutions the panel spec created ("E2E Org <timestamp>"), with their logo files.
+    const institutions = ((await api.request('/items/qrv_institutions', { query: { 'filter[name][_starts_with]': 'E2E Org ', 'fields': 'id,logo,logo_raster', 'limit': '-1' } }).catch(() => [])) ?? []) as { id: string; logo?: string | null; logo_raster?: string | null }[];
+    for (const inst of institutions) {
+      await api.request(`/items/qrv_institutions/${inst.id}`, { method: 'DELETE' });
+      for (const fileId of [inst.logo, inst.logo_raster].filter(Boolean)) {
+        await api.request(`/files/${fileId}`, { method: 'DELETE' }).catch(() => null);
+      }
+    }
+    process.stdout.write(`[e2e] teardown: ${disposable.length} test account(s), ${institutions.length} institution(s) deleted\n`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stdout.write(`[e2e] teardown: could not delete accounts (${message}) — delete ${accounts.admin.email} etc. manually\n`);

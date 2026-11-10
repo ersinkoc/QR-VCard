@@ -9,6 +9,7 @@ import { displayName, fetchMe, login, logout, setUnauthenticatedHandler } from '
 import AccountView from './AccountView';
 import AuditView from './AuditView';
 import CardsView from './CardsView';
+import InstitutionsView from './InstitutionsView';
 import { SessionContext } from './session';
 import UsersView from './UsersView';
 
@@ -97,6 +98,11 @@ function PanelLayout({ me, onSignOut, children }: { me: Me; onSignOut: () => voi
             <NavLink to="/panel" end className={tab}>
               {t('nav.cards')}
             </NavLink>
+            {me.role === 'admin' && (
+              <NavLink to="/panel/institutions" className={tab}>
+                {t('nav.institutions')}
+              </NavLink>
+            )}
             {me.role === 'admin' && (
               <NavLink to="/panel/users" className={tab}>
                 {t('nav.users')}
@@ -223,6 +229,7 @@ export default function PanelPage() {
       <PanelLayout me={session.me} onSignOut={() => void signOut()}>
         <Routes>
           <Route index element={<CardsView />} />
+          <Route path="institutions" element={session.me.role === 'admin' ? <InstitutionsView /> : <Navigate to="/panel" replace />} />
           <Route path="users" element={session.me.role === 'admin' ? <UsersView /> : <Navigate to="/panel" replace />} />
           <Route path="audit" element={session.me.role === 'admin' ? <AuditView /> : <Navigate to="/panel" replace />} />
           <Route path="account" element={<AccountView />} />

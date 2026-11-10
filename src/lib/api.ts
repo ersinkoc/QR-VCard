@@ -67,6 +67,8 @@ export interface Card extends CardContent {
   logo: string | null;
   /** Page-designer background image file id (cache-buster), or null. */
   background: string | null;
+  /** The linked institution: its name and logo show on the card. */
+  institution: Institution | null;
   /** Public page views counted by the server (panel previews excluded). */
   qrv_views: number;
   /** Answers the owner's /<username> short URL (one per owner). */
@@ -79,6 +81,29 @@ export interface Card extends CardContent {
   /** Full collaborator list — included by the shares endpoints. */
   collaborators?: Collaborator[];
 }
+
+/** One of an institution's named addresses; the card form copies it into the card. */
+export interface InstitutionAddress {
+  label: string;
+  address: string;
+}
+
+/** An admin-managed organisation cards link to (name + logo live, addresses copied). */
+export interface Institution {
+  id: string;
+  name: string;
+  website: string | null;
+  phone: string | null;
+  email: string | null;
+  accent_color: string | null;
+  addresses: InstitutionAddress[];
+  /** Logo file tag (cache-buster), or null. The logo may be an SVG. */
+  logo: string | null;
+  /** Cards linking it — admins only. */
+  card_count?: number;
+}
+
+export type InstitutionInput = Partial<Omit<Institution, 'id' | 'logo' | 'card_count'>>;
 
 export interface PublicCard extends CardContent {
   code: string;
@@ -99,7 +124,7 @@ export interface Role {
   kind: RoleKind;
 }
 
-export type CardInput = Partial<CardContent> & { status?: Card['status']; code?: string; is_primary?: boolean; owner_id?: string };
+export type CardInput = Partial<CardContent> & { status?: Card['status']; code?: string; is_primary?: boolean; owner_id?: string; institution?: string | null };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -224,6 +249,11 @@ export function cardLogoUrl(card: Pick<Card, 'id' | 'logo'>): string | null {
   return card.logo ? `/api/cards/${card.id}/logo?v=${card.logo.slice(0, 8)}` : null;
 }
 
+/** The logo the card shows in the panel: its institution's, else its own (legacy) logo. */
+export function cardEffectiveLogoUrl(card: Pick<Card, 'id' | 'logo' | 'institution'>): string | null {
+  return card.institution?.logo ? institutionLogoUrl(card.institution) : cardLogoUrl(card);
+}
+
 export function cardBackgroundUrl(card: Pick<Card, 'id' | 'background'>): string | null {
   return card.background ? `/api/cards/${card.id}/background?v=${card.background.slice(0, 8)}` : null;
 }
@@ -261,6 +291,22 @@ export function publicLogoUrl(card: Pick<PublicCard, 'code' | 'logo'>, format?: 
 export function publicBackgroundUrl(card: Pick<PublicCard, 'code' | 'background'>): string | null {
   if (!card.background) return null;
   return `/api/public/cards/${encodeURIComponent(card.code)}/background?v=${card.background}`;
+}
+
+// --- institutions --------------------------------------------------------------------
+
+export const listInstitutions = () => request<Institution[]>('GET', '/api/institutions');
+export const createInstitution = (input: InstitutionInput) => request<Institution>('POST', '/api/institutions', input);
+export const updateInstitution = (id: string, patch: InstitutionInput) => request<Institution>('PATCH', `/api/institutions/${id}`, patch);
+export const deleteInstitution = (id: string, detach = false) =>
+  request<{ cards: number }>('DELETE', `/api/institutions/${id}${detach ? '?detach=1' : ''}`);
+export const uploadInstitutionLogo = (id: string, image: Blob) => request<Institution>('POST', `/api/institutions/${id}/logo`, image);
+/** The PNG rendition of an SVG logo (vCard photo, email signatures). */
+export const uploadInstitutionLogoRaster = (id: string, image: Blob) => request<Institution>('POST', `/api/institutions/${id}/logo/raster`, image);
+export const deleteInstitutionLogo = (id: string) => request<Institution>('DELETE', `/api/institutions/${id}/logo`);
+
+export function institutionLogoUrl(inst: Pick<Institution, 'id' | 'logo'>, format?: 'jpg'): string | null {
+  return inst.logo ? `/api/institutions/${inst.id}/logo?v=${inst.logo}${format ? `&format=${format}` : ''}` : null;
 }
 
 // --- users (admin) ------------------------------------------------------------------

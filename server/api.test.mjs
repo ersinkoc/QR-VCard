@@ -63,6 +63,7 @@ function fakeDirectus() {
     audit: [],
     viewDays: [],
     cardAccess: [],
+    institutions: [],
   };
   const withRole = (u) => ({ ...u, role: ROLES.find((r) => r.id === u.role) ?? null });
   let seq = 100;
@@ -116,8 +117,9 @@ function fakeDirectus() {
       if (query.aggregate) {
         if (query.groupBy) {
           const counts = new Map();
-          for (const c of rows) counts.set(c.owner, (counts.get(c.owner) ?? 0) + 1);
-          return [...counts].map(([owner, count]) => ({ owner, count }));
+          const key = query.groupBy[0];
+          for (const c of rows) counts.set(c[key], (counts.get(c[key]) ?? 0) + 1);
+          return [...counts].map(([value, count]) => ({ [key]: value, count }));
         }
         return [{ count: rows.length }];
       }
@@ -166,9 +168,36 @@ function fakeDirectus() {
       return null;
     }
     if (path === '/files' && method === 'POST') {
-      const file = { id: newId() };
+      const blob = body?.get?.('file');
+      const file = { id: newId(), type: blob?.type ?? null, data: blob ? Buffer.from(await blob.arrayBuffer()) : Buffer.alloc(0) };
       db.files.push(file);
-      return file;
+      return { id: file.id, type: file.type };
+    }
+    // Like Directus: transforms apply to bitmaps only; an SVG comes back as-is.
+    if ((m = path.match(/^\/assets\/(.+)$/))) {
+      const file = db.files.find((f) => f.id === m[1]);
+      if (!file) throw new DirectusError(404, 'NOT_FOUND', 'no file');
+      const type = file.type === 'image/svg+xml' ? file.type : query.format === 'jpg' ? 'image/jpeg' : query.format === 'webp' ? 'image/webp' : file.type;
+      return new Response(file.data, { headers: { 'content-type': type } });
+    }
+    // ---- qrv_institutions -------------------------------------------------
+    if (path === '/items/qrv_institutions' && method === 'GET') {
+      return db.institutions.filter((i) => matches(i, query.filter)).map((i) => ({ ...i }));
+    }
+    if (path === '/items/qrv_institutions' && method === 'POST') {
+      const row = { id: newId(), logo: null, logo_raster: null, website: null, phone: null, email: null, accent_color: null, date_created: new Date().toISOString(), ...body };
+      db.institutions.push(row);
+      return { ...row };
+    }
+    if ((m = path.match(/^\/items\/qrv_institutions\/(.+)$/))) {
+      const row = db.institutions.find((i) => i.id === m[1]);
+      if (method === 'PATCH') return { ...Object.assign(row, body) };
+      if (method === 'DELETE') {
+        db.institutions = db.institutions.filter((i) => i.id !== m[1]);
+        // The relation is ON DELETE SET NULL.
+        for (const c of db.cards) if (c.institution === m[1]) c.institution = null;
+      }
+      return null;
     }
     if ((m = path.match(/^\/files\/(.+)$/))) {
       db.files = db.files.filter((f) => f.id !== m[1]);
@@ -301,7 +330,8 @@ async function call(method, url, { body, cookie, headers = {} } = {}) {
     makeReq({ method, url, body, headers: { ...(write ? { 'x-qrv': '1' } : {}), ...(cookie ? { cookie } : {}), ...headers } }),
     res,
   );
-  return { handled, status: res.status, json: res.json(), headers: res.headers };
+  const isJson = String(res.headers['Content-Type'] ?? 'application/json').includes('json');
+  return { handled, status: res.status, json: isJson ? res.json() : null, body: res.body, headers: res.headers };
 }
 
 async function signIn(email, password) {
@@ -1223,5 +1253,157 @@ describe('audit log', () => {
     const cookie = await signIn('admin@example.com', 'admin-pass');
     expect((await call('POST', '/api/users', { cookie, body: { email: 'still@example.com', password: 'still-pass1', role: USER_ROLE.id, first_name: 'S', last_name: 'T' } })).status).toBe(201);
     expect(directus.db.users.some((u) => u.email === 'still@example.com')).toBe(true);
+  });
+});
+
+describe('institutions', () => {
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const SVG = Buffer.from('<?xml version="1.0"?>\n<!-- logo -->\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#e11"/></svg>');
+
+  async function createInstitution(cookie, body = {}) {
+    const r = await call('POST', '/api/institutions', { cookie, body: { name: 'Acme Ltd', website: 'acme.example', phone: '+90 212 000 00 00', addresses: [{ label: 'HQ', address: 'Levent, İstanbul' }, { label: 'Ankara', address: 'Çankaya, Ankara' }], ...body } });
+    expect(r.status).toBe(201);
+    return r.json.data;
+  }
+
+  it('lets admins manage institutions and every signed-in user list them', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const inst = await createInstitution(admin);
+    expect(inst).toMatchObject({ name: 'Acme Ltd', website: 'https://acme.example', addresses: [{ label: 'HQ', address: 'Levent, İstanbul' }, { label: 'Ankara', address: 'Çankaya, Ankara' }], card_count: 0, logo: null });
+
+    const ada = await signIn('ada@example.com', 'ada-pass');
+    const listed = await call('GET', '/api/institutions', { cookie: ada });
+    expect(listed.status).toBe(200);
+    expect(listed.json.data.map((i) => i.name)).toEqual(['Acme Ltd']);
+    expect(listed.json.data[0]).not.toHaveProperty('card_count');
+
+    const writes = [
+      ['POST', '/api/institutions', { name: 'X' }],
+      ['PATCH', `/api/institutions/${inst.id}`, { name: 'X' }],
+      ['DELETE', `/api/institutions/${inst.id}`, undefined],
+      ['POST', `/api/institutions/${inst.id}/logo`, PNG],
+    ];
+    for (const [method, url, body] of writes) {
+      expect((await call(method, url, { cookie: ada, body })).status, `${method} ${url}`).toBe(403);
+    }
+    const editor = await signIn('editor@example.com', 'editor-pass');
+    expect((await call('POST', '/api/institutions', { cookie: editor, body: { name: 'X' } })).status).toBe(403);
+  });
+
+  it('validates the name, contact fields and the address list', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const r = await call('POST', '/api/institutions', { cookie: admin, body: { name: ' ', email: 'nope', addresses: [{ label: 'HQ' }] } });
+    expect(r.status).toBe(400);
+    expect(r.json.error.fields).toEqual({ name: 'required', email: 'invalid_email', addresses: 'invalid_addresses' });
+    const many = Array.from({ length: 31 }, (_, i) => ({ label: `A${i}`, address: 'x' }));
+    expect((await call('POST', '/api/institutions', { cookie: admin, body: { name: 'A', addresses: many } })).json.error.fields).toEqual({ addresses: 'invalid_addresses' });
+  });
+
+  it('links a card: the name and logo are live, contact fields fill only the gaps, the address is never replaced', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const inst = await createInstitution(admin);
+    expect((await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: PNG })).status).toBe(200);
+
+    const ada = await signIn('ada@example.com', 'ada-pass');
+    const linked = await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: ada, body: { institution: inst.id, organization: 'typed by hand', address: 'My desk' } });
+    expect(linked.status).toBe(200);
+    expect(linked.json.data.organization).toBe('Acme Ltd');
+    expect(linked.json.data.institution).toMatchObject({ id: inst.id, name: 'Acme Ltd' });
+    expect(linked.json.data.institution.logo).toBeTruthy();
+    // The card's own legacy logo stays its own: deleting the card must never take the institution's file.
+    expect(linked.json.data.logo).toBeNull();
+
+    const pub = (await call('GET', '/api/public/cards/adaCard')).json.data;
+    expect(pub).toMatchObject({ organization: 'Acme Ltd', website: 'https://acme.example', phone: '+90 212 000 00 00', address: 'My desk' });
+    expect(pub.logo).toBe(directus.db.institutions[0].logo.slice(0, 8));
+    expect(pub).not.toHaveProperty('institution');
+    expect((await call('GET', '/api/public/cards/adaCard/logo')).status).toBe(200);
+
+    // A rename reaches the card (live) and its stored copy (search, vCard).
+    await call('PATCH', `/api/institutions/${inst.id}`, { cookie: admin, body: { name: 'Acme Holding' } });
+    expect((await call('GET', '/api/public/cards/adaCard')).json.data.organization).toBe('Acme Holding');
+    expect(directus.db.cards.find((c) => c.id === ID.adaCard).organization).toBe('Acme Holding');
+
+    // Deleting the card keeps the institution's logo file.
+    const fileId = directus.db.institutions[0].logo;
+    await call('DELETE', `/api/cards/${ID.adaCard}`, { cookie: ada });
+    expect(directus.db.files.some((f) => f.id === fileId)).toBe(true);
+  });
+
+  it('refuses an unknown institution and lets a card be named by its institution alone', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const bad = await call('POST', '/api/cards', { cookie: admin, body: { institution: '00000000-0000-4000-8000-0000000000ff' } });
+    expect(bad.json.error.fields).toEqual({ institution: 'invalid' });
+    const inst = await createInstitution(admin);
+    const ok = await call('POST', '/api/cards', { cookie: admin, body: { institution: inst.id } });
+    expect(ok.status).toBe(201);
+    expect(ok.json.data.organization).toBe('Acme Ltd');
+  });
+
+  it('guards deleting an institution in use, then detaches its cards on confirmation', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const inst = await createInstitution(admin);
+    await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: SVG });
+    await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: admin, body: { institution: inst.id } });
+
+    const refused = await call('DELETE', `/api/institutions/${inst.id}`, { cookie: admin });
+    expect(refused.status).toBe(409);
+    expect(refused.json.error).toMatchObject({ code: 'IN_USE', fields: { count: '1' } });
+
+    const logoFile = directus.db.institutions[0].logo;
+    const done = await call('DELETE', `/api/institutions/${inst.id}?detach=1`, { cookie: admin });
+    expect(done.status).toBe(200);
+    expect(directus.db.cards.find((c) => c.id === ID.adaCard)).toMatchObject({ institution: null, organization: 'Acme Ltd' });
+    expect(directus.db.files.some((f) => f.id === logoFile)).toBe(false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(directus.db.audit.map((a) => a.action)).toContain('institution.delete');
+  });
+
+  it('accepts a plain SVG logo, serves it sandboxed, and never hands it out as a JPEG', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const inst = await createInstitution(admin);
+    expect((await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: SVG })).status).toBe(200);
+    await call('PATCH', `/api/cards/${ID.adaCard}`, { cookie: admin, body: { institution: inst.id } });
+
+    const svg = await call('GET', '/api/public/cards/adaCard/logo');
+    expect(svg.status).toBe(200);
+    expect(svg.headers['Content-Type']).toBe('image/svg+xml');
+    expect(svg.headers['Content-Security-Policy']).toMatch(/sandbox/);
+    expect(svg.body).toContain('<svg');
+
+    // No rendition yet: the vCard path gets a 404 (and falls back), not an SVG.
+    expect((await call('GET', '/api/public/cards/adaCard/logo?format=jpg')).status).toBe(404);
+    // An SVG is not a valid rendition; a PNG is.
+    expect((await call('POST', `/api/institutions/${inst.id}/logo/raster`, { cookie: admin, body: SVG })).status).toBe(415);
+    expect((await call('POST', `/api/institutions/${inst.id}/logo/raster`, { cookie: admin, body: PNG })).status).toBe(200);
+    const jpg = await call('GET', '/api/public/cards/adaCard/logo?format=jpg');
+    expect(jpg.status).toBe(200);
+    expect(jpg.headers['Content-Type']).toBe('image/jpeg');
+
+    // A new logo drops the stale rendition with it.
+    const raster = directus.db.institutions[0].logo_raster;
+    await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: PNG });
+    expect(directus.db.institutions[0].logo_raster).toBeNull();
+    expect(directus.db.files.some((f) => f.id === raster)).toBe(false);
+  });
+
+  it('refuses SVGs that carry script, handlers or external references', async () => {
+    const admin = await signIn('admin@example.com', 'admin-pass');
+    const inst = await createInstitution(admin);
+    const evil = [
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><rect/></a></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div/></foreignObject></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.example/x.png"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://evil.example/a.css);</style></svg>',
+      '<!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    ];
+    for (const text of evil) {
+      const r = await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: Buffer.from(text) });
+      expect(r.status, text).toBe(415);
+      expect(r.json.error.code, text).toBe('SVG_UNSAFE');
+    }
+    expect((await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: Buffer.from('hello') })).json.error.code).toBe('LOGO_TYPE');
   });
 });

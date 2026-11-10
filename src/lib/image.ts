@@ -23,6 +23,54 @@ export async function shrinkImage(file: File, maxEdge = 1024): Promise<Blob> {
   }
 }
 
+export const isSvgFile = (file: Blob) => file.type === 'image/svg+xml' || (file instanceof File && /\.svg$/i.test(file.name));
+
+/**
+ * Renders an SVG to a transparent PNG (longest edge `maxEdge`). Directus cannot
+ * rasterise SVG, and the vCard photo and email signatures need a bitmap, so the
+ * panel uploads this rendition next to the vector logo. An SVG with only a
+ * viewBox (no width/height) still gets its proportions from the viewBox.
+ */
+export async function rasterizeSvg(file: Blob, maxEdge = 512): Promise<Blob> {
+  const text = await file.text();
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  const root = doc.documentElement;
+  if (root.nodeName.toLowerCase() !== 'svg') throw new Error('not an SVG');
+  const box = (root.getAttribute('viewBox') ?? '').trim().split(/[\s,]+/).map(Number);
+  const attr = (name: string) => Number.parseFloat(root.getAttribute(name) ?? '') || 0;
+  let w = attr('width') || (box.length === 4 ? box[2]! : 0);
+  let h = attr('height') || (box.length === 4 ? box[3]! : 0);
+  if (!(w > 0 && h > 0)) w = h = maxEdge;
+  const scale = maxEdge / Math.max(w, h);
+  const width = Math.max(1, Math.round(w * scale));
+  const height = Math.max(1, Math.round(h * scale));
+  // Explicit pixel size: browsers draw a size-less SVG at 300×150 or not at all.
+  root.setAttribute('width', String(width));
+  root.setAttribute('height', String(height));
+  if (box.length !== 4) root.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(doc)], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    img.decoding = 'async';
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('SVG could not be rendered'));
+      img.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('canvas unavailable');
+    ctx.drawImage(img, 0, 0, width, height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('SVG rendering failed');
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** Base64 of a blob, without the data: prefix (for the vCard PHOTO property). */
 export async function blobToBase64(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());

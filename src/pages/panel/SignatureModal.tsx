@@ -4,7 +4,7 @@ import BrandMark from '../../components/BrandMark';
 import Modal from '../../components/Modal';
 import { useI18n } from '../../i18n';
 import type { Card } from '../../lib/api';
-import { cardLogoUrl, cardPhotoUrl, displayName, publicLogoUrl, shortUrl } from '../../lib/api';
+import { cardEffectiveLogoUrl, cardPhotoUrl, displayName, institutionLogoUrl, publicLogoUrl, shortUrl } from '../../lib/api';
 
 const escapeHtml = (value: string) => value.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
 
@@ -21,7 +21,9 @@ export default function SignatureModal({ card, onClose }: { card: Card; onClose:
   const name = displayName(card) || card.organization || card.code;
   const accent = card.accent_color ?? '#2457f5';
   const photo = cardPhotoUrl(card);
-  const logo = cardLogoUrl(card);
+  const logo = cardEffectiveLogoUrl(card);
+  // Canvas and email need a bitmap: an SVG institution logo has a PNG rendition behind ?format=jpg.
+  const rasterLogo = card.institution?.logo ? institutionLogoUrl(card.institution, 'jpg') : logo;
   const cardUrl = shortUrl(card.code);
 
   async function downloadPng() {
@@ -75,8 +77,10 @@ export default function SignatureModal({ card, onClose }: { card: Card; onClose:
       ctx.font = '400 22px Arial, sans-serif';
       const lines = [card.phone, card.email, card.website?.replace(/^https?:\/\//, ''), cardUrl.replace(/^https?:\/\//, '')].filter(Boolean) as string[];
       lines.slice(0, 4).forEach((line, index) => ctx.fillText(line, 360, 201 + index * 34));
-      if (logo) {
-        const img = await loadImage(logo);
+      // A vector logo without its PNG rendition is skipped, not fatal.
+      const logoImg = rasterLogo ? await loadImage(rasterLogo).catch(() => null) : null;
+      if (logoImg) {
+        const img = logoImg;
         const scale = Math.min(150 / img.width, 82 / img.height);
         const width = img.width * scale;
         const height = img.height * scale;
@@ -102,7 +106,7 @@ export default function SignatureModal({ card, onClose }: { card: Card; onClose:
   async function copyHtml() {
     try {
       const details = [card.job_title, card.organization].filter(Boolean).map((value) => escapeHtml(String(value))).join(' · ');
-      const publicLogo = publicLogoUrl(card);
+      const publicLogo = publicLogoUrl({ code: card.code, logo: card.institution?.logo ?? card.logo }, 'jpg');
       const logoCell = publicLogo ? `<td style="padding-left:18px"><img src="${escapeHtml(new URL(publicLogo, window.location.origin).href)}" alt="${escapeHtml(card.organization || '')}" width="96" style="display:block;max-width:96px;max-height:56px;object-fit:contain"></td>` : '';
       const html = `<table cellpadding="0" cellspacing="0" role="presentation" style="font-family:Arial,sans-serif;color:#10131a"><tr><td style="border-left:5px solid ${accent};padding:8px 18px"><strong style="font-size:18px">${escapeHtml(name)}</strong><br><span style="font-size:13px;color:${accent}">${details}</span><br><span style="font-size:12px;color:#555d6d">${[card.phone, card.email, card.website].filter(Boolean).map((v) => escapeHtml(String(v))).join(' · ')}</span><br><a href="${escapeHtml(cardUrl)}" style="font-size:12px;color:${accent}">${escapeHtml(cardUrl)}</a></td>${logoCell}</tr></table>`;
       if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {

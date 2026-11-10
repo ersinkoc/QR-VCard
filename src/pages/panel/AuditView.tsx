@@ -14,6 +14,12 @@ function actionInfo(t: (key: string) => string, action: string): { text: string;
       return { text: t('audit.actionUserDelete'), tone: 'danger' };
     case 'card.delete':
       return { text: t('audit.actionCardDelete'), tone: 'danger' };
+    case 'institution.create':
+      return { text: t('audit.actionInstitutionCreate'), tone: '' };
+    case 'institution.update':
+      return { text: t('audit.actionInstitutionUpdate'), tone: '' };
+    case 'institution.delete':
+      return { text: t('audit.actionInstitutionDelete'), tone: 'danger' };
     case 'password.set':
     case 'password.change':
       return { text: t('audit.actionPassword'), tone: 'accent' };

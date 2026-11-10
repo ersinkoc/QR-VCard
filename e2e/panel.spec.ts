@@ -39,7 +39,7 @@ test.describe('panel main flows', () => {
     await page.getByRole('button', { name: 'New card' }).click();
     await page.getByLabel('First name').fill('E2E');
     await page.getByLabel('Last name').fill('Probe');
-    await page.getByLabel('Organization').fill('E2E Industries');
+    await page.getByLabel('Organization name').fill('E2E Industries');
     await page.getByRole('button', { name: 'Save card' }).click();
     await expect(page.getByText('Card saved.')).toBeVisible();
 
@@ -161,36 +161,68 @@ test.describe('panel main flows', () => {
     await signOut(page);
   });
 
-  test('corporate logo upload is independent and publicly served', async ({ page, accounts }) => {
+  test('institutions: an admin adds an SVG-logo organization; a card links it and copies an address', async ({ page, accounts }) => {
+    const name = `E2E Org ${Date.now()}`;
+    const svg = join(tmpdir(), `e2e-org-${Date.now()}.svg`);
+    // viewBox only (no width/height): the in-browser PNG rendition must still keep the 3:1 shape.
+    writeFileSync(svg, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 80"><rect width="240" height="80" fill="#0f766e"/><circle cx="44" cy="40" r="22" fill="#fbbf24"/></svg>');
+
+    await signIn(page, accounts.admin);
+    await page.getByRole('link', { name: 'Organizations' }).click();
+    await page.getByRole('button', { name: 'New organization' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Organization name').fill(name);
+    await dialog.getByLabel('Website').fill('e2e-org.example');
+    await dialog.getByRole('button', { name: '+ Add address' }).click();
+    await dialog.getByLabel('Address name 1', { exact: true }).fill('Head office');
+    await dialog.getByLabel('Address 1', { exact: true }).fill('1 Test Street, Istanbul');
+    await dialog.locator('input[type=file]').setInputFiles(svg);
+    await dialog.getByRole('button', { name: 'Create' }).click();
+    await expect(page.getByText('Organization created.')).toBeVisible();
+
+    const institutions = ((await (await page.request.get('/api/institutions')).json()) as { data: { id: string; name: string; logo: string | null }[] }).data;
+    const inst = institutions.find((i) => i.name === name);
+    expect(inst?.logo).toBeTruthy();
+    expect((await page.request.get(`/api/institutions/${inst!.id}/logo`)).headers()['content-type']).toBe('image/svg+xml');
+    // The PNG rendition the browser rendered backs the bitmap consumers.
+    const raster = await page.request.get(`/api/institutions/${inst!.id}/logo?format=jpg`);
+    expect(raster.status()).toBe(200);
+    expect(raster.headers()['content-type']).toBe('image/jpeg');
+    await signOut(page);
+
     await signIn(page, accounts.user);
     await page.getByRole('button', { name: 'New card' }).click();
     await page.getByLabel('First name').fill('E2E');
-    await page.getByLabel('Last name').fill('Logo');
-    await page.getByLabel('Organization').fill('E2E Brand House');
-    await page.getByRole('button', { name: /Terminal/ }).click();
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
-    const file = join(tmpdir(), `e2e-logo-${Date.now()}.png`);
-    writeFileSync(file, png);
-    await page.locator('input[type=file]').last().setInputFiles(file);
+    await page.getByLabel('Last name').fill('Org');
+    await page.getByLabel('Organization', { exact: true }).selectOption({ label: name });
+    await expect(page.getByLabel('Organization name')).toHaveValue(name);
+    await page.getByLabel('Copy from organization addresses').selectOption({ index: 1 });
+    const address = page.getByLabel('Address', { exact: true });
+    await expect(address).toHaveValue('1 Test Street, Istanbul');
+    // Copied, not linked: the person edits their own copy.
+    await address.fill('1 Test Street, Istanbul — floor 5');
     await page.getByRole('button', { name: 'Save card' }).click();
     await expect(page.getByText('Card saved.')).toBeVisible();
 
     const listing = await page.request.get('/api/cards');
-    const card = ((await listing.json()) as { data: { id: string; code: string; last_name: string | null; photo: string | null; logo: string | null; design_style: string | null }[] }).data.find((row) => row.last_name === 'Logo');
-    expect(card?.logo).toBeTruthy();
-    expect(card?.photo).toBeNull();
-    expect(card?.design_style).toBe('terminal');
-    expect((await page.request.get(`/api/cards/${card!.id}/logo`)).status()).toBe(200);
+    const card = ((await listing.json()) as { data: { id: string; code: string; last_name: string | null; organization: string | null; address: string | null; logo: string | null; institution: { id: string } | null }[] }).data.find((row) => row.last_name === 'Org');
+    expect(card?.institution?.id).toBe(inst!.id);
+    expect(card?.organization).toBe(name);
+    expect(card?.address).toBe('1 Test Street, Istanbul — floor 5');
+    expect(card?.logo).toBeNull();
 
     await page.getByRole('button', { name: 'Publish' }).first().click();
-    // Wait for THIS card's badge: the list's stats also say "Published", so a
-    // page-wide match passes before the publish request has landed.
-    await expect(page.getByRole('listitem').filter({ hasText: 'E2E Logo' }).getByText('Published', { exact: true })).toBeVisible();
-    expect((await page.request.get(`/api/public/cards/${card!.code}/logo`)).status()).toBe(200);
+    await expect(page.getByRole('listitem').filter({ hasText: 'E2E Org' }).getByText('Published', { exact: true }).first()).toBeVisible();
+    const pub = ((await (await page.request.get(`/api/public/cards/${card!.code}`)).json()) as { data: { organization: string; website: string | null; logo: string | null } }).data;
+    expect(pub.organization).toBe(name);
+    expect(pub.website).toBe('https://e2e-org.example');
+    expect(pub.logo).toBe(inst!.logo);
+    expect((await page.request.get(`/api/public/cards/${card!.code}/logo`)).headers()['content-type']).toBe('image/svg+xml');
+
     await page.getByRole('button', { name: 'Delete' }).first().click();
     await page.getByRole('button', { name: 'Delete' }).last().click();
     await expect(page.getByText('Card deleted.')).toBeVisible();
-    rmSync(file, { force: true });
+    rmSync(svg, { force: true });
     await signOut(page);
   });
 

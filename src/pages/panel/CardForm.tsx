@@ -4,8 +4,8 @@ import CardIdentity from '../../components/CardIdentity';
 import Field from '../../components/Field';
 import PagePreview from '../../components/page/PagePreview';
 import { errorText, fieldErrorTexts, isApiError, useI18n } from '../../i18n';
-import type { AdminUser, Card, CardDesign, CardInput, PublicCard } from '../../lib/api';
-import { cardBackgroundUrl, cardLogoUrl, cardPhotoUrl, createCard, deleteCardBackground, deleteCardLogo, deleteCardPhoto, displayName, listUsers, shortUrl, updateCard, uploadCardBackground, uploadCardLogo, uploadCardPhoto } from '../../lib/api';
+import type { AdminUser, Card, CardDesign, CardInput, Institution, PublicCard } from '../../lib/api';
+import { cardBackgroundUrl, cardLogoUrl, cardPhotoUrl, createCard, deleteCardBackground, deleteCardLogo, deleteCardPhoto, displayName, institutionLogoUrl, listInstitutions, listUsers, shortUrl, updateCard, uploadCardBackground, uploadCardPhoto } from '../../lib/api';
 import { shrinkImage } from '../../lib/image';
 import { CARD_DESIGNS } from '../../lib/card-designs';
 import type { PageDesign } from '../../lib/page-design';
@@ -62,9 +62,12 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [removePhoto, setRemovePhoto] = useState(false);
-  const [logoFile, setLogoFile] = useState<File | null>(null);
-  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  // Logos come from the linked institution; a card's own (legacy) logo can
+  // only be removed here, no longer replaced.
   const [removeLogo, setRemoveLogo] = useState(false);
+  const [institutions, setInstitutions] = useState<Institution[] | null>(null);
+  const [institutionId, setInstitutionId] = useState(initial?.institution?.id ?? '');
+  const [addressCopied, setAddressCopied] = useState(false);
   const [photoStyle, setPhotoStyle] = useState<'avatar' | 'logo'>(initial?.photo_style === 'logo' ? 'logo' : 'avatar');
   const [designStyle, setDesignStyle] = useState<CardDesign>(initial?.design_style ?? 'executive');
   // Page designer: kept in memory while the classic mode is selected, so
@@ -96,14 +99,10 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
   }, [photoFile]);
 
   useEffect(() => {
-    if (!logoFile) {
-      setLogoPreview(null);
-      return;
-    }
-    const url = URL.createObjectURL(logoFile);
-    setLogoPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [logoFile]);
+    listInstitutions()
+      .then(setInstitutions)
+      .catch(() => setInstitutions([]));
+  }, []);
 
   useEffect(() => {
     if (!backgroundFile) {
@@ -117,16 +116,26 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
 
   const fieldErrors = fieldErrorTexts(t, error);
   const shownPhoto = photoPreview ?? (!removePhoto && initial ? cardPhotoUrl(initial) : null);
-  const shownLogo = logoPreview ?? (!removeLogo && initial ? cardLogoUrl(initial) : null);
-  const previewName = displayName({ first_name: values.first_name || null, last_name: values.last_name || null }) || values.organization || '—';
+  // Until the list arrives, the card's own copy of its institution stands in.
+  const institution = institutionId ? (institutions?.find((i) => i.id === institutionId) ?? (initial?.institution?.id === institutionId ? initial.institution : null)) : null;
+  const ownLogo = !removeLogo && initial ? cardLogoUrl(initial) : null;
+  const shownLogo = institution?.logo ? institutionLogoUrl(institution) : ownLogo;
+  const previewName = displayName({ first_name: values.first_name || null, last_name: values.last_name || null }) || institution?.name || values.organization || '—';
   const storedBackground = initial ? cardBackgroundUrl(initial) : null;
   const shownBackground = backgroundPreview ?? (removeBackground ? null : storedBackground);
 
   // What the visitor would see, built from the unsaved form (page designer previews).
   const previewCard = useMemo<PublicCard>(() => {
     const text = Object.fromEntries((Object.keys(INPUTS) as FieldKey[]).map((k) => [k, values[k].trim() || null])) as Record<FieldKey, string | null>;
+    // The same merge the server applies to the public card.
+    if (institution) {
+      text.organization = institution.name;
+      text.website ??= institution.website;
+      text.phone ??= institution.phone;
+      text.email ??= institution.email;
+    }
     return { ...text, accent_color: accent, photo_style: photoStyle, design_style: designStyle, design_config: null, code: initial?.code ?? '', photo: null, logo: null, background: null };
-  }, [values, accent, photoStyle, designStyle, initial?.code]);
+  }, [values, accent, photoStyle, designStyle, initial?.code, institution]);
   const previewAssets = useMemo(() => ({ photo: shownPhoto, logo: shownLogo }), [shownPhoto, shownLogo]);
 
   function choosePageMode() {
@@ -149,6 +158,12 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
     let saved: Card | null = null;
     try {
       const payload: CardInput = { ...values, accent_color: accent, status, photo_style: photoStyle, design_style: designStyle };
+      // Only send the link when there is one to write or clear, so an install
+      // without the institutions schema keeps saving cards.
+      if (institution) {
+        payload.institution = institution.id;
+        payload.organization = institution.name;
+      } else if (initial?.institution) payload.institution = null;
       // Only touch design_config when there is one to write or clear: an
       // install that has not re-run bootstrap keeps saving classic cards.
       if (designMode === 'page' && pageDesign) payload.design_config = pageDesign;
@@ -177,8 +192,7 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
       warning = e;
     }
     try {
-      if (logoFile) saved = await uploadCardLogo(saved.id, logoFile);
-      else if (removeLogo && saved.logo) saved = await deleteCardLogo(saved.id);
+      if (removeLogo && saved.logo) saved = await deleteCardLogo(saved.id);
     } catch (e) {
       warning ??= e;
     }
@@ -207,6 +221,31 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
             <fieldset key={section.title}>
               <legend className="mb-2 text-xs font-medium tracking-wide text-muted uppercase">{t(section.title)}</legend>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {section.fields.includes('organization') && (
+                  <Field id={id('institution')} label={t('form.institution')} error={fieldErrors.institution} hint={institutions?.length === 0 ? t('form.institutionEmpty') : t('form.institutionHint')} className="sm:col-span-2">
+                    <select
+                      id={id('institution')}
+                      className="input"
+                      value={institutionId}
+                      disabled={institutions === null && !initial?.institution}
+                      onChange={(e) => {
+                        const next = institutions?.find((i) => i.id === e.target.value) ?? null;
+                        setInstitutionId(next?.id ?? '');
+                        setAddressCopied(false);
+                        if (next?.accent_color) setAccent(next.accent_color);
+                        // Unlinking keeps the name as editable text.
+                        if (!next && institution) setValues((v) => ({ ...v, organization: institution.name }));
+                      }}
+                    >
+                      <option value="">{t('form.institutionNone')}</option>
+                      {(institutions ?? (initial?.institution ? [initial.institution] : [])).map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
                 {section.fields.map((key) => {
                   const spec = INPUTS[key];
                   const err = fieldErrors[key];
@@ -218,8 +257,36 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
                     'aria-describedby': err ? `${id(key)}-msg` : undefined,
                     onChange: (e: { target: { value: string } }) => setValues((v) => ({ ...v, [key]: e.target.value })),
                   };
+                  if (key === 'organization' && institution) {
+                    return (
+                      <Field key={key} id={id(key)} label={t('form.organization')} hint={t('form.organizationFromInstitution')}>
+                        <input id={id(key)} className="input text-muted" value={institution.name} readOnly />
+                      </Field>
+                    );
+                  }
+                  const addressChoices = key === 'address' ? (institution?.addresses ?? []) : [];
                   return (
-                    <Field key={key} id={id(key)} label={t(`form.${key}`)} error={err} className={spec.wide ? 'sm:col-span-2' : ''}>
+                    <Field key={key} id={id(key)} label={t(`form.${key}`)} error={err} className={spec.wide ? 'sm:col-span-2' : ''} hint={key === 'address' && addressCopied ? t('form.addressCopied') : undefined}>
+                      {addressChoices.length > 0 && (
+                        <select
+                          className="input mb-2"
+                          aria-label={t('form.addressFromInstitution')}
+                          value=""
+                          onChange={(e) => {
+                            const picked = addressChoices[Number(e.target.value)];
+                            if (!picked) return;
+                            setValues((v) => ({ ...v, address: picked.address }));
+                            setAddressCopied(true);
+                          }}
+                        >
+                          <option value="">{t('form.addressFromInstitution')}…</option>
+                          {addressChoices.map((a, i) => (
+                            <option key={`${i}-${a.label}`} value={i}>
+                              {a.label} — {a.address.replace(/\s+/g, ' ').slice(0, 70)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                       {spec.multiline ? (
                         <textarea {...common} className="input min-h-20" placeholder={key === 'note' ? t('form.notePlaceholder') : t('form.addressPlaceholder')} />
                       ) : (
@@ -359,7 +426,7 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
             name={previewName}
             photoUrl={shownPhoto}
             logoUrl={shownLogo}
-            card={{ ...values, accent_color: accent, photo_style: photoStyle, design_style: designStyle }}
+            card={{ ...values, organization: institution?.name ?? values.organization, accent_color: accent, photo_style: photoStyle, design_style: designStyle }}
           />
           <div className="flex flex-wrap gap-2">
             <label className="btn btn-secondary btn-sm cursor-pointer">
@@ -409,28 +476,21 @@ export default function CardForm({ initial, onCancel, onSaved }: { initial: Card
           <div className="border-t border-line pt-3">
             <span className="label">{t('form.logo')}</span>
             {shownLogo && <img src={shownLogo} alt="" className="mb-3 h-16 w-full rounded-lg border border-line bg-white object-contain p-2" />}
-            <div className="flex flex-wrap gap-2">
-              <label className="btn btn-secondary btn-sm cursor-pointer">
-                {shownLogo ? t('form.logoChange') : t('form.logoChoose')}
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  className="sr-only"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] ?? null;
-                    setLogoFile(file);
-                    if (file) setRemoveLogo(false);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-              {shownLogo && (
-                <button type="button" className="btn btn-ghost btn-sm text-danger" onClick={() => { setLogoFile(null); setRemoveLogo(true); }}>
+            {institution ? (
+              <p className="text-xs text-muted">{institution.logo ? t('form.logoFromInstitution', { name: institution.name }) : t('form.logoInstitutionMissing', { name: institution.name })}</p>
+            ) : (
+              <p className="text-xs text-muted">{t('form.institutionHint')}</p>
+            )}
+            {ownLogo && (
+              <div className="mt-3 rounded-lg border border-line p-2">
+                <p className="text-xs font-medium">{t('form.logoLegacy')}</p>
+                {institution?.logo && <img src={ownLogo} alt="" className="my-2 h-10 w-full rounded border border-line bg-white object-contain p-1" />}
+                <p className="mt-1 text-xs text-muted">{t('form.logoLegacyHint')}</p>
+                <button type="button" className="btn btn-ghost btn-sm mt-2 text-danger" onClick={() => setRemoveLogo(true)}>
                   {t('form.logoRemove')}
                 </button>
-              )}
-            </div>
-            <p className="mt-2 text-xs text-muted">{t('form.logoHint')}</p>
+              </div>
+            )}
           </div>
         </aside>
       </div>

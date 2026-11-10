@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { stripUser } from './export-directus.mjs';
-import { blockingField, cardPayload, userPayload } from './import-directus.mjs';
+import { blockingField, cardPayload, institutionPayload, userPayload } from './import-directus.mjs';
 
 describe('export-directus', () => {
   it('strips credentials that can never be written back through the API', () => {
@@ -68,6 +68,15 @@ describe('import-directus', () => {
     const older = cardPayload({ id: 'c2', code: 'y' }, { fileMap });
     expect('logo' in older).toBe(false);
     expect('background' in older).toBe(false);
+  });
+
+  it('remaps the card institution and the institution logo files', () => {
+    const out = cardPayload({ id: 'c1', code: 'x', institution: 'src-inst' }, { institutionMap: new Map([['src-inst', 'dst-inst']]) });
+    expect(out.institution).toBe('dst-inst');
+    expect(cardPayload({ id: 'c1', code: 'x', institution: 'gone' }).institution).toBeNull();
+    expect('institution' in cardPayload({ id: 'c2', code: 'y' })).toBe(false);
+    const inst = institutionPayload({ id: 'i1', name: 'Acme', logo: 'src-svg', logo_raster: 'src-png', addresses: [{ label: 'HQ', address: 'x' }] }, { fileMap: new Map([['src-svg', 'dst-svg'], ['src-png', 'dst-png']]) });
+    expect(inst).toMatchObject({ name: 'Acme', logo: 'dst-svg', logo_raster: 'dst-png', addresses: [{ label: 'HQ', address: 'x' }] });
   });
 
   it('nulls dangling card references instead of writing source ids', () => {
