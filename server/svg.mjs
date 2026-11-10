@@ -37,21 +37,35 @@ export function sniffSvg(buf) {
   return /^<svg[\s>]/i.test(text);
 }
 
+/** Elements that run, embed or animate content: never needed by a logo. */
+const ACTIVE_ELEMENTS = new Set(['iframe', 'embed', 'object', 'audio', 'video', 'animate', 'set', 'handler', 'listener', 'discard']);
+
+/** `ş:Script` → `script`: the part after the last colon, lowercased. */
+const localName = (qname) => qname.slice(qname.lastIndexOf(':') + 1).toLowerCase();
+
 /**
  * The reason an SVG is refused, or null when it is plain vector artwork.
  * Deliberately strict: logos exported from design tools never need any of this.
  */
 export function unsafeSvg(text) {
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) return 'doctype';
-  // Every name check allows an XML namespace prefix: `<x:script xmlns:x="…svg">`
-  // IS a script element, and `x:onload=` an event handler.
-  if (/<(?:[\w.-]+:)?script[\s>/]/i.test(text)) return 'script';
-  if (/<(?:[\w.-]+:)?foreignObject[\s>/]/i.test(text)) return 'foreignObject';
-  if (/<(?:[\w.-]+:)?(?:iframe|embed|object|audio|video|animate|set|handler|listener)[\s>/]/i.test(text)) return 'embed';
+  // Names are judged by their LOCAL part, whatever the prefix: XML prefixes may
+  // use any Unicode letters, and `<ş:script xmlns:ş="…/svg">` IS a script
+  // element (`ş:onload=` an event handler). So every element and attribute
+  // name in the text is extracted and its part after the last ':' checked —
+  // a scan of the whole text, so a '>' inside a quoted value hides nothing.
+  for (const m of text.matchAll(/<\s*([^\s<>/!?"'=]+)/gu)) {
+    const local = localName(m[1]);
+    if (local === 'script') return 'script';
+    if (local === 'foreignobject') return 'foreignObject';
+    if (ACTIVE_ELEMENTS.has(local)) return 'embed';
+  }
+  for (const m of text.matchAll(/[\s"']([^\s<>/!?"'=]+)\s*=/gu)) {
+    if (localName(m[1]).startsWith('on')) return 'event-handler';
+  }
   // Logos are SVG; markup from other vocabularies (XHTML, XSLT, XML Events…) is not.
   if (/http:\/\/www\.w3\.org\/(?:1999\/xhtml|1999\/XSL|2001\/xml-events)/i.test(text)) return 'foreign-namespace';
   if (/<\?xml-stylesheet/i.test(text)) return 'stylesheet-pi';
-  if (/\s(?:[\w.-]+:)?on[a-z]+\s*=/i.test(text)) return 'event-handler';
   if (/javascript:|vbscript:/i.test(text)) return 'script-url';
   // Links may only point inside the document or at an inline raster image.
   for (const m of text.matchAll(/(?:[\w.-]+:)?href\s*=\s*(["'])(.*?)\1/gis)) {

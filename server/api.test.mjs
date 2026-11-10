@@ -1405,6 +1405,11 @@ describe('institutions', () => {
       '<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml"><h:div>x</h:div></svg>',
       '<?xml-stylesheet type="text/xsl" href="#x"?><svg xmlns="http://www.w3.org/2000/svg"></svg>',
       '<svg xmlns="http://www.w3.org/2000/svg"><svg:animate xmlns:svg="http://www.w3.org/2000/svg" attributeName="href"/></svg>',
+      // Prefixes may use any Unicode letter; a '>' inside a value must not hide what follows.
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:ş="http://www.w3.org/2000/svg"><ş:script>alert(1)</ş:script></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:ş="http://www.w3.org/2000/svg" ş:onload="alert(1)"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" data-x=">" onload="alert(1)"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:日本="http://www.w3.org/2000/svg"><日本:foreignObject/></svg>',
     ];
     for (const text of evil) {
       const r = await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: Buffer.from(text) });
