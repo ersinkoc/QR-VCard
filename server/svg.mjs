@@ -43,13 +43,18 @@ export function sniffSvg(buf) {
  */
 export function unsafeSvg(text) {
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) return 'doctype';
-  if (/<script[\s>/]/i.test(text)) return 'script';
-  if (/<foreignObject[\s>/]/i.test(text)) return 'foreignObject';
-  if (/<(?:iframe|embed|object|audio|video|animate|set)[\s>/]/i.test(text)) return 'embed';
-  if (/\son[a-z]+\s*=/i.test(text)) return 'event-handler';
+  // Every name check allows an XML namespace prefix: `<x:script xmlns:x="…svg">`
+  // IS a script element, and `x:onload=` an event handler.
+  if (/<(?:[\w.-]+:)?script[\s>/]/i.test(text)) return 'script';
+  if (/<(?:[\w.-]+:)?foreignObject[\s>/]/i.test(text)) return 'foreignObject';
+  if (/<(?:[\w.-]+:)?(?:iframe|embed|object|audio|video|animate|set|handler|listener)[\s>/]/i.test(text)) return 'embed';
+  // Logos are SVG; markup from other vocabularies (XHTML, XSLT, XML Events…) is not.
+  if (/http:\/\/www\.w3\.org\/(?:1999\/xhtml|1999\/XSL|2001\/xml-events)/i.test(text)) return 'foreign-namespace';
+  if (/<\?xml-stylesheet/i.test(text)) return 'stylesheet-pi';
+  if (/\s(?:[\w.-]+:)?on[a-z]+\s*=/i.test(text)) return 'event-handler';
   if (/javascript:|vbscript:/i.test(text)) return 'script-url';
   // Links may only point inside the document or at an inline raster image.
-  for (const m of text.matchAll(/(?:xlink:)?href\s*=\s*(["'])(.*?)\1/gis)) {
+  for (const m of text.matchAll(/(?:[\w.-]+:)?href\s*=\s*(["'])(.*?)\1/gis)) {
     const href = m[2].trim();
     if (!href.startsWith('#') && !/^data:image\/(?:png|jpe?g|gif|webp);/i.test(href)) return 'external-href';
   }

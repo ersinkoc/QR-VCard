@@ -1398,6 +1398,13 @@ describe('institutions', () => {
       '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.example/x.png"/></svg>',
       '<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://evil.example/a.css);</style></svg>',
       '<!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      // Namespace prefixes must not hide an element or attribute.
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="http://www.w3.org/2000/svg"><x:script>alert(1)</x:script></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="http://www.w3.org/2000/svg" x:onload="alert(1)"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:a="http://www.w3.org/1999/xlink"><image a:href="https://evil.example/x.png"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml"><h:div>x</h:div></svg>',
+      '<?xml-stylesheet type="text/xsl" href="#x"?><svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><svg:animate xmlns:svg="http://www.w3.org/2000/svg" attributeName="href"/></svg>',
     ];
     for (const text of evil) {
       const r = await call('POST', `/api/institutions/${inst.id}/logo`, { cookie: admin, body: Buffer.from(text) });
